@@ -107,7 +107,8 @@ func (r *MysqlClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 // bug说明
 // 上述SetupWithManager的核心在与针对MysqlCluster资源所拥有的Pod控制器只会在 MysqlCluster 对象本身发生 创建 / 更新 / 删除 时被触发
-// 我检测当pod发生挂掉时，会触发调谐函数的执行，检查主从状态的逻辑是根据endpoint来判断的，如果endpoint控制器摘出失效的ednpoint的慢了（异步执行的），会导致我的调谐逻辑运行失效，所有从库的主从状态都挂掉，然而后续也不会有事件出来了，这就会导致主从状态无法恢复正常，这个该如何解决呢？
+// 我检测当pod发生挂掉时，会触发调谐函数的执行，检查主从状态的逻辑是根据endpoint来判断的，如果endpoint控制器摘出失效的ednpoint的慢了（异步执行的），会导致我的调谐逻辑运行失效，所有从库的主从状态都挂掉，
+// 然而后续也不会有事件出来了，这就会导致主从状态无法恢复正常，这个该如何解决呢？
 // 在SetupWithManager中添加对相关endpoint的watch事件，例如下面的样子，代码没有经过测试，只罗列大致逻辑
 // func (r *MysqlClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 //     return ctrl.NewControllerManagedBy(mgr).
