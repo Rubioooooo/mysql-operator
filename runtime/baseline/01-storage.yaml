@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mysql-operator-dev
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mysql-operator-dev-pv-01
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql-operator-dev
+    mysql-operator.dev/node: control-plane
+spec:
+  capacity:
+    storage: 4Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /var/lib/mysql-operator-dev/pv01
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - k8s-control-plane
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mysql-operator-dev-pv-02
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql-operator-dev
+    mysql-operator.dev/node: worker1
+spec:
+  capacity:
+    storage: 4Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /var/lib/mysql-operator-dev/pv02
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - k8s-worker1
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mysql-operator-dev-pv-03
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql-operator-dev
+    mysql-operator.dev/node: worker2
+spec:
+  capacity:
+    storage: 4Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /var/lib/mysql-operator-dev/pv03
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - k8s-worker2
