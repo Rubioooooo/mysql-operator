@@ -1,0 +1,146 @@
+===== MySQL Operator Phase 0 Runtime Baseline Seal =====
+
+SEALED_AT_UTC=2026-08-30T16:08:28Z
+GIT_HEAD=a20f0f307b5fa67c481f72ae637ca598b7c451ed
+GIT_BRANCH=mysql-operator-dev
+
+===== 1. MysqlCluster =====
+apiVersion: apps.egonlin.com/v1
+kind: MysqlCluster
+metadata:
+  annotations:
+    initialized: "true"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps.egonlin.com/v1","kind":"MysqlCluster","metadata":{"annotations":{},"name":"mysql-baseline","namespace":"mysql-operator-dev"},"spec":{"image":"registry.cn-shanghai.aliyuncs.com/egon-k8s-test/mysql:5.7","masterService":"mysql-baseline-master","replicas":3,"resources":{"limits":{"cpu":"500m","memory":"768Mi"},"requests":{"cpu":"100m","memory":"256Mi"}},"slaveService":"mysql-baseline-slave","storage":{"size":"4Gi","storageClassName":"local-storage"}}}
+  creationTimestamp: "2026-08-30T00:27:48Z"
+  generation: 1
+  name: mysql-baseline
+  namespace: mysql-operator-dev
+  resourceVersion: "1346343"
+  uid: f504d0a0-8848-4737-a193-7579fd7bbbdf
+spec:
+  image: registry.cn-shanghai.aliyuncs.com/egon-k8s-test/mysql:5.7
+  masterService: mysql-baseline-master
+  replicas: 3
+  resources:
+    limits:
+      cpu: 500m
+      memory: 768Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  slaveService: mysql-baseline-slave
+  storage:
+    size: 4Gi
+    storageClassName: local-storage
+
+===== 2. Pods / Roles / Nodes =====
+NAME       READY   STATUS    RESTARTS   AGE   IP             NODE                NOMINATED NODE   READINESS GATES   LABELS
+mysql-01   1/1     Running   0          15h   10.244.2.139   k8s-worker2         <none>           <none>            app=mysql,role=slave
+mysql-02   1/1     Running   0          15h   10.244.1.172   k8s-worker1         <none>           <none>            app=mysql,role=master
+mysql-03   1/1     Running   0          15h   10.244.0.25    k8s-control-plane   <none>           <none>            app=mysql,role=slave
+
+===== 3. PVC =====
+NAME       STATUS   VOLUME                     CAPACITY   ACCESS MODES   STORAGECLASS    VOLUMEATTRIBUTESCLASS   AGE   VOLUMEMODE
+mysql-01   Bound    mysql-operator-dev-pv-03   4Gi        RWO            local-storage   <unset>                 15h   Filesystem
+mysql-02   Bound    mysql-operator-dev-pv-02   4Gi        RWO            local-storage   <unset>                 15h   Filesystem
+mysql-03   Bound    mysql-operator-dev-pv-01   4Gi        RWO            local-storage   <unset>                 15h   Filesystem
+
+===== 4. PV =====
+NAME                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                         STORAGECLASS    VOLUMEATTRIBUTESCLASS   REASON   AGE   VOLUMEMODE
+mysql-operator-dev-pv-01   4Gi        RWO            Retain           Bound    mysql-operator-dev/mysql-03   local-storage   <unset>                          22h   Filesystem
+mysql-operator-dev-pv-02   4Gi        RWO            Retain           Bound    mysql-operator-dev/mysql-02   local-storage   <unset>                          22h   Filesystem
+mysql-operator-dev-pv-03   4Gi        RWO            Retain           Bound    mysql-operator-dev/mysql-01   local-storage   <unset>                          22h   Filesystem
+
+===== 5. Services =====
+NAME                    TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+mysql-baseline-master   ClusterIP   10.98.5.10      <none>        3306/TCP   15h   app=mysql,role=master
+mysql-baseline-slave    ClusterIP   10.110.58.155   <none>        3306/TCP   15h   app=mysql,role=slave
+
+===== 6. EndpointSlices =====
+NAME                          ADDRESSTYPE   PORTS   ENDPOINTS                  AGE
+mysql-baseline-master-sxn54   IPv4          3306    10.244.1.172               15h
+mysql-baseline-slave-wf5kv    IPv4          3306    10.244.0.25,10.244.2.139   15h
+
+===== 7. MySQL Runtime State =====
+
+========== mysql-01 ==========
+===== Identity =====
+mysql-01	1	ON	0	0	a45fbd11-a409-11f1-b24d-92dde7a7c024:1-22,\na7e6a892-a409-11f1-a145-0e2bed6d2463:1-16
+
+===== Slave Status =====
+                  Master_Host: mysql-baseline-master
+                  Master_User: replica
+             Slave_IO_Running: Yes
+            Slave_SQL_Running: Yes
+        Seconds_Behind_Master: 0
+                Last_IO_Error: 
+               Last_SQL_Error: 
+           Retrieved_Gtid_Set: a7e6a892-a409-11f1-a145-0e2bed6d2463:1-16
+            Executed_Gtid_Set: a45fbd11-a409-11f1-b24d-92dde7a7c024:1-22,
+
+========== mysql-02 ==========
+===== Identity =====
+mysql-02	2	ON	0	0	a45fbd11-a409-11f1-b24d-92dde7a7c024:1-22,\na7e6a892-a409-11f1-a145-0e2bed6d2463:1-16
+
+===== Slave Status =====
+                  Master_Host: mysql-baseline-master
+                  Master_User: replica
+             Slave_IO_Running: No
+            Slave_SQL_Running: No
+        Seconds_Behind_Master: NULL
+                Last_IO_Error: 
+               Last_SQL_Error: 
+           Retrieved_Gtid_Set: a45fbd11-a409-11f1-b24d-92dde7a7c024:1-22
+            Executed_Gtid_Set: a45fbd11-a409-11f1-b24d-92dde7a7c024:1-22,
+
+========== mysql-03 ==========
+===== Identity =====
+mysql-03	3	ON	0	0	a45fbd11-a409-11f1-b24d-92dde7a7c024:1-22,\na7e6a892-a409-11f1-a145-0e2bed6d2463:1-16,\na970eb64-a409-11f1-ae55-dee3055e7453:1-5
+
+===== Slave Status =====
+                  Master_Host: mysql-baseline-master
+                  Master_User: replica
+             Slave_IO_Running: Yes
+            Slave_SQL_Running: Yes
+        Seconds_Behind_Master: 0
+                Last_IO_Error: 
+               Last_SQL_Error: 
+           Retrieved_Gtid_Set: a7e6a892-a409-11f1-a145-0e2bed6d2463:1-16
+            Executed_Gtid_Set: a45fbd11-a409-11f1-b24d-92dde7a7c024:1-22,
+
+===== 8. OwnerReferences =====
+--- pod/mysql-01 ---
+OWNER_API=apps.egonlin.com/v1 OWNER_KIND=MysqlCluster OWNER_NAME=mysql-baseline
+--- pod/mysql-02 ---
+OWNER_API=apps.egonlin.com/v1 OWNER_KIND=MysqlCluster OWNER_NAME=mysql-baseline
+--- pod/mysql-03 ---
+OWNER_API=apps.egonlin.com/v1 OWNER_KIND=MysqlCluster OWNER_NAME=mysql-baseline
+--- persistentvolumeclaim/mysql-01 ---
+OWNER_API=database.kubebuilder.io/v1 OWNER_KIND=MysqlCluster OWNER_NAME=mysql-baseline
+--- persistentvolumeclaim/mysql-02 ---
+OWNER_API=database.kubebuilder.io/v1 OWNER_KIND=MysqlCluster OWNER_NAME=mysql-baseline
+--- persistentvolumeclaim/mysql-03 ---
+OWNER_API=database.kubebuilder.io/v1 OWNER_KIND=MysqlCluster OWNER_NAME=mysql-baseline
+
+===== 9. Operator =====
+NAME                                                READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS   IMAGES                                                                                                    SELECTOR
+deployment.apps/mysql-operator-controller-manager   1/1     1            1           15h   manager      crpi-uxjhyltxd2kcr7f9.cn-hangzhou.personal.cr.aliyuncs.com/k8s-test-111/mysql-operator:baseline-e3cac48   control-plane=controller-manager
+
+NAME                                                     READY   STATUS    RESTARTS   AGE   IP             NODE          NOMINATED NODE   READINESS GATES
+pod/mysql-operator-controller-manager-5c6c756b7d-slbx2   1/1     Running   0          15m   10.244.2.140   k8s-worker2   <none>           <none>
+
+===== 10. Operator Image =====
+IMAGE=crpi-uxjhyltxd2kcr7f9.cn-hangzhou.personal.cr.aliyuncs.com/k8s-test-111/mysql-operator:baseline-e3cac48
+
+===== 11. Leader Election =====
+NAME                   HOLDER                                                                                    AGE
+bf19fbca.egonlin.com   mysql-operator-controller-manager-5c6c756b7d-slbx2_05488f17-9208-4cc9-bb2f-e82bd2664256   15h
+
+===== 12. OpsLab Safety Guard =====
+NAME                         CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                                                                                                               STORAGECLASS    VOLUMEATTRIBUTESCLASS   REASON   AGE
+opslab-mysql-local-pv        18Gi       RWO            Retain           Bound    opslab/opslab-mysql-data                                                                                            local-storage   <unset>                          23d
+opslab-redis-local-pv        18Gi       RWO            Retain           Bound    opslab/opslab-redis-data                                                                                            local-storage   <unset>                          23d
+opslab-prometheus-local-pv   28Gi       RWO            Retain           Bound    monitoring/prometheus-opslab-monitoring-kube-pro-prometheus-db-prometheus-opslab-monitoring-kube-pro-prometheus-0   local-storage   <unset>                          17d
+
+===== Phase 0 Runtime Baseline Seal END =====
