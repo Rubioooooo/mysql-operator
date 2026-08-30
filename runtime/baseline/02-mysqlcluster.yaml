@@ -1,0 +1,24 @@
+apiVersion: apps.egonlin.com/v1
+kind: MysqlCluster
+metadata:
+  name: mysql-baseline
+  namespace: mysql-operator-dev
+spec:
+  image: registry.cn-shanghai.aliyuncs.com/egon-k8s-test/mysql:5.7
+
+  replicas: 3
+
+  masterService: mysql-baseline-master
+  slaveService: mysql-baseline-slave
+
+  storage:
+    storageClassName: local-storage
+    size: 4Gi
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "768Mi"
