@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../config/rbac
+  - ../../../config/manager
+
+# Runtime baseline isolation.
+# Keep the original config/ tree unchanged.
+namePrefix: mysql-operator-
+namespace: mysql-operator-system
+
+# config/manager/kustomization.yaml first rewrites:
+# controller:latest
+# ->
+# registry.cn-shanghai.aliyuncs.com/egon-k8s-test/mysql-operator:v0.0.4
+#
+# Therefore this upper-level overlay must match the transformed image name.
+images:
+  - name: registry.cn-shanghai.aliyuncs.com/egon-k8s-test/mysql-operator
+    newName: crpi-uxjhyltxd2kcr7f9.cn-hangzhou.personal.cr.aliyuncs.com/k8s-test-111/mysql-operator
+    newTag: baseline-e3cac48
