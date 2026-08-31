@@ -14,7 +14,20 @@ spec:
     singular: mysqlcluster
   scope: Namespaced
   versions:
-  - name: v1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.primary
+      name: Primary
+      type: string
+    - jsonPath: .status.readyReplicas
+      name: Ready
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
     schema:
       openAPIV3Schema:
         properties:
@@ -36,40 +49,83 @@ spec:
           metadata:
             type: object
           spec:
+            description: MysqlClusterSpec defines the desired state of MysqlCluster.
             properties:
               image:
-                description: |-
-                  MasterConfig  string `json:"masterConfig"`
-                  SlaveConfig   string `json:"slaveConfig"`
+                description: Image is the MySQL container image.
+                minLength: 1
                 type: string
               masterService:
+                description: |-
+                  MasterService is the legacy service name used to route traffic to the primary.
+                  It is retained for API compatibility and will be migrated to the primary-service
+                  architecture in a later phase.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z]([-a-z0-9]*[a-z0-9])?$
                 type: string
               replicas:
+                default: 3
+                description: Replicas is the desired number of MySQL members.
                 format: int32
+                minimum: 1
                 type: integer
               resources:
-                description: 资源要求定义
+                description: ResourceRequirements defines resource requests and limits
+                  for MySQL.
                 properties:
                   limits:
-                    description: 资源限制定义
+                    description: ResourceLimits defines CPU and memory limits for
+                      a MySQL container.
                     properties:
                       cpu:
-                        type: string
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                        x-kubernetes-validations:
+                        - message: cpu limit must not be negative
+                          rule: 'type(self) == int ? self >= 0 : sign(quantity(self))
+                            >= 0'
                       memory:
-                        type: string
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                        x-kubernetes-validations:
+                        - message: memory limit must not be negative
+                          rule: 'type(self) == int ? self >= 0 : sign(quantity(self))
+                            >= 0'
                     required:
                     - cpu
                     - memory
                     type: object
                   requests:
-                    description: |-
-                      子结构体：用于资源限制
-                      资源请求定义
+                    description: ResourceRequests defines CPU and memory requests
+                      for a MySQL container.
                     properties:
                       cpu:
-                        type: string
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                        x-kubernetes-validations:
+                        - message: cpu request must not be negative
+                          rule: 'type(self) == int ? self >= 0 : sign(quantity(self))
+                            >= 0'
                       memory:
-                        type: string
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                        x-kubernetes-validations:
+                        - message: memory request must not be negative
+                          rule: 'type(self) == int ? self >= 0 : sign(quantity(self))
+                            >= 0'
                     required:
                     - cpu
                     - memory
@@ -79,15 +135,34 @@ spec:
                 - requests
                 type: object
               slaveService:
+                description: |-
+                  SlaveService is the legacy service name used to route traffic to replicas.
+                  It is retained for API compatibility and will be migrated to the replica-service
+                  architecture in a later phase.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z]([-a-z0-9]*[a-z0-9])?$
                 type: string
               storage:
-                description: |-
-                  1、定制CRD必须要有的字段：CR文件中引用的字段是json后的字段
-                  子结构体：用于定制存储
+                description: StorageConfig defines the persistent storage requested
+                  for each MySQL member.
                 properties:
                   size:
-                    type: string
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: Size is the persistent storage capacity requested
+                      for each MySQL member.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                    x-kubernetes-validations:
+                    - message: storage size must be greater than zero
+                      rule: 'type(self) == int ? self > 0 : sign(quantity(self)) ==
+                        1'
                   storageClassName:
+                    description: StorageClassName is the StorageClass used by MySQL
+                      persistent storage.
+                    minLength: 1
                     type: string
                 required:
                 - size
@@ -96,23 +171,129 @@ spec:
             required:
             - image
             - masterService
-            - replicas
             - resources
             - slaveService
             - storage
             type: object
+            x-kubernetes-validations:
+            - message: masterService and slaveService must be different
+              rule: self.masterService != self.slaveService
           status:
-            description: 2、定制status信息
+            description: MysqlClusterStatus defines the observed state of MysqlCluster.
             properties:
+              conditions:
+                description: Conditions describe the current reconciliation and availability
+                  state.
+                items:
+                  description: "Condition contains details for one aspect of the current
+                    state of this API Resource.\n---\nThis struct is intended for
+                    direct use as an array at the field path .status.conditions.  For
+                    example,\n\n\n\ttype FooStatus struct{\n\t    // Represents the
+                    observations of a foo's current state.\n\t    // Known .status.conditions.type
+                    are: \"Available\", \"Progressing\", and \"Degraded\"\n\t    //
+                    +patchMergeKey=type\n\t    // +patchStrategy=merge\n\t    // +listType=map\n\t
+                    \   // +listMapKey=type\n\t    Conditions []metav1.Condition `json:\"conditions,omitempty\"
+                    patchStrategy:\"merge\" patchMergeKey:\"type\" protobuf:\"bytes,1,rep,name=conditions\"`\n\n\n\t
+                    \   // other fields\n\t}"
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: |-
+                        type of condition in CamelCase or in foo.example.com/CamelCase.
+                        ---
+                        Many .condition.type values are consistent across resources like Available, but because arbitrary conditions can be
+                        useful (see .node.status.conditions), the ability to deconflict is important.
+                        The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              currentReplicas:
+                description: CurrentReplicas is the number of MySQL members currently
+                  observed.
+                format: int32
+                type: integer
               master:
+                description: |-
+                  Master is retained for compatibility with the original API.
+                  Deprecated: use Primary.
                 type: string
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  by the controller.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is the high-level lifecycle state of the cluster.
+                enum:
+                - Pending
+                - Initializing
+                - Running
+                - Degraded
+                - Failed
+                type: string
+              primary:
+                description: Primary is the currently observed primary MySQL member.
+                type: string
+              readyReplicas:
+                description: ReadyReplicas is the number of MySQL members currently
+                  ready.
+                format: int32
+                type: integer
               slaves:
+                description: |-
+                  Slaves is retained for compatibility with the original API.
+                  Deprecated: replica membership will be represented by the new status model.
                 items:
                   type: string
                 type: array
-            required:
-            - master
-            - slaves
             type: object
         type: object
     served: true

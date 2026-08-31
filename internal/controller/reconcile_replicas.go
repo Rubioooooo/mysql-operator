@@ -17,7 +17,7 @@ import (
 func (r *MysqlClusterReconciler) reconcileReplicas(ctx context.Context, cluster databasev1.MysqlCluster) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 	actualReplicaCount, actualReplicaNames := r.getActualReplicaInfo(ctx, cluster) //获取实际副本数
-	expectedReplicaCount := cluster.Spec.Replicas
+	expectedReplicaCount := desiredReplicas(&cluster)
 
 	if actualReplicaCount != expectedReplicaCount {
 		log.Info("副本数与预期不符", "实际副本数", actualReplicaCount, "预期副本数", expectedReplicaCount)
@@ -39,7 +39,7 @@ func (r *MysqlClusterReconciler) reconcileReplicas(ctx context.Context, cluster 
 			// 如果volume不存在需要创建，方法内部有判断机制
 			pvcName := fmt.Sprintf("mysql-%s", podNumber) // pvc名字与pod名是一致的
 			storageClassName := cluster.Spec.Storage.StorageClassName
-			storageSize := cluster.Spec.Storage.Size
+			storageSize := cluster.Spec.Storage.Size.String()
 			if err := r.createPVC(ctx, pvcName, storageClassName, cluster.Namespace, storageSize, &cluster); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -86,7 +86,7 @@ func (r *MysqlClusterReconciler) getActualReplicaInfo(ctx context.Context, clust
 		podNames = append(podNames, pod.Name)
 	}
 
-	log.Info("当前副本情况", "副本数", len(podList.Items), "PodNames", podNames, "预期副本数", cluster.Spec.Replicas)
+	log.Info("当前副本情况", "副本数", len(podList.Items), "PodNames", podNames, "预期副本数", desiredReplicas(&cluster))
 
 	// 计算实际副本数
 	return int32(len(podList.Items)), podNames

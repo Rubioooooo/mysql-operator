@@ -24,7 +24,7 @@ func (r *MysqlClusterReconciler) init(ctx context.Context, cluster *databasev1.M
 	}
 
 	// 2、读取读取副本数
-	replicas := cluster.Spec.Replicas
+	replicas := desiredReplicas(cluster)
 	if replicas < 1 {
 		return fmt.Errorf("invalid replica count: %d", replicas)
 	}
@@ -41,7 +41,7 @@ func (r *MysqlClusterReconciler) init(ctx context.Context, cluster *databasev1.M
 
 	// 4、根据副本数创建出pvc
 	storageClassName := cluster.Spec.Storage.StorageClassName
-	storageSize := cluster.Spec.Storage.Size
+	storageSize := cluster.Spec.Storage.Size.String()
 	for i := int32(1); i <= replicas; i++ {
 		pvcName := fmt.Sprintf("mysql-%02d", i)
 		if err := r.createPVC(ctx, pvcName, storageClassName, cluster.Namespace, storageSize, cluster); err != nil {

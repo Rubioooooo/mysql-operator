@@ -58,6 +58,8 @@ var _ = Describe("MysqlCluster envtest API boundary", func() {
 	})
 
 	It("should create, read, and delete a structurally valid MysqlCluster", func() {
+		replicas := int32(3)
+
 		resource := &appsv1.MysqlCluster{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      resourceName,
@@ -65,21 +67,21 @@ var _ = Describe("MysqlCluster envtest API boundary", func() {
 			},
 			Spec: appsv1.MysqlClusterSpec{
 				Image:         "example.com/mysql:5.7",
-				Replicas:      3,
+				Replicas:      &replicas,
 				MasterService: "test-master",
 				SlaveService:  "test-replica",
 				Storage: appsv1.StorageConfig{
 					StorageClassName: "test-storage",
-					Size:             "1Gi",
+					Size:             mustQuantityForTest("1Gi"),
 				},
 				Resources: appsv1.ResourceRequirements{
 					Requests: appsv1.ResourceRequests{
-						CPU:    "100m",
-						Memory: "128Mi",
+						CPU:    mustQuantityForTest("100m"),
+						Memory: mustQuantityForTest("128Mi"),
 					},
 					Limits: appsv1.ResourceLimits{
-						CPU:    "500m",
-						Memory: "512Mi",
+						CPU:    mustQuantityForTest("500m"),
+						Memory: mustQuantityForTest("512Mi"),
 					},
 				},
 			},
@@ -94,11 +96,12 @@ var _ = Describe("MysqlCluster envtest API boundary", func() {
 		Expect(k8sClient.Get(ctx, namespacedName, stored)).To(Succeed())
 
 		Expect(stored.Spec.Image).To(Equal("example.com/mysql:5.7"))
-		Expect(stored.Spec.Replicas).To(Equal(int32(3)))
+		Expect(stored.Spec.Replicas).NotTo(BeNil())
+		Expect(*stored.Spec.Replicas).To(Equal(int32(3)))
 		Expect(stored.Spec.MasterService).To(Equal("test-master"))
 		Expect(stored.Spec.SlaveService).To(Equal("test-replica"))
 		Expect(stored.Spec.Storage.StorageClassName).To(Equal("test-storage"))
-		Expect(stored.Spec.Storage.Size).To(Equal("1Gi"))
+		Expect(stored.Spec.Storage.Size.Cmp(mustQuantityForTest("1Gi"))).To(Equal(0))
 
 		By("deleting the MysqlCluster")
 		Expect(k8sClient.Delete(ctx, stored)).To(Succeed())

@@ -12,10 +12,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	//"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client" // 提供与 Kubernetes API 交互的客户端
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"k8s.io/client-go/rest"
 
 	databasev1 "github.com/egonlin/api/v1" // 导入自定义的 MySQLCluster API 资源定义
 	v1 "k8s.io/api/core/v1"                // 核心 Kubernetes API 对象，例如 Pod 和 Service
@@ -154,12 +154,12 @@ func (r *MysqlClusterReconciler) createPod(ctx context.Context, name, image, con
 	// 获取resources资源限制
 	resources := v1.ResourceRequirements{
 		Requests: v1.ResourceList{
-			v1.ResourceCPU:    resource.MustParse(cluster.Spec.Resources.Requests.CPU),
-			v1.ResourceMemory: resource.MustParse(cluster.Spec.Resources.Requests.Memory),
+			v1.ResourceCPU:    cluster.Spec.Resources.Requests.CPU,
+			v1.ResourceMemory: cluster.Spec.Resources.Requests.Memory,
 		},
 		Limits: v1.ResourceList{
-			v1.ResourceCPU:    resource.MustParse(cluster.Spec.Resources.Limits.CPU),
-			v1.ResourceMemory: resource.MustParse(cluster.Spec.Resources.Limits.Memory),
+			v1.ResourceCPU:    cluster.Spec.Resources.Limits.CPU,
+			v1.ResourceMemory: cluster.Spec.Resources.Limits.Memory,
 		},
 	}
 

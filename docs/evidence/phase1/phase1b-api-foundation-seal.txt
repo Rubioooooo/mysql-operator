@@ -1,0 +1,74 @@
+===== Phase 1-B API Foundation Final Seal =====
+
+===== 1. Git Baseline =====
+## mysql-operator-dev...origin/mysql-operator-dev
+ M api/v1/mysqlcluster_types.go
+ M api/v1/zz_generated.deepcopy.go
+ M config/crd/bases/apps.egonlin.com_mysqlclusters.yaml
+ M internal/controller/initialization.go
+ M internal/controller/mysqlcluster_controller_test.go
+ M internal/controller/reconcile_replicas.go
+ M internal/controller/utlis.go
+?? docs/evidence/phase1/phase1b-api-foundation-seal.txt
+?? internal/controller/api_helpers.go
+?? internal/controller/mysqlcluster_api_validation_test.go
+?? internal/controller/mysqlcluster_status_test.go
+HEAD=005c81f8fb4c159539a34f01063f2b15379ee662
+
+===== 2. Diff Check =====
+PHASE1B_DIFF_CHECK=PASS
+
+===== 3. Generated Artifact Guard =====
+/mnt/d/projects/mysql-operator/bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
+/mnt/d/projects/mysql-operator/bin/controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+MAKE_GENERATE_RC=0
+MAKE_MANIFESTS_RC=0
+PHASE1B_GENERATED_DRIFT_GUARD=PASS
+
+===== 4. API Schema Guards =====
+REPLICAS_POINTER_API=PASS
+REPLICAS_DEFAULT_MINIMUM_SCHEMA=PASS
+SERVICE_CROSS_FIELD_VALIDATION=PASS
+QUANTITY_CEL_SCHEMA=PASS
+STATUS_FIELD_observedGeneration=PASS
+STATUS_FIELD_phase=PASS
+STATUS_FIELD_primary=PASS
+STATUS_FIELD_currentReplicas=PASS
+STATUS_FIELD_readyReplicas=PASS
+STATUS_FIELD_conditions=PASS
+
+===== 5. Legacy API Compatibility =====
+PHASE0_API_COMPATIBILITY=PASS
+
+===== 6. go vet =====
+GO_VET_RC=0
+PHASE1B_GO_VET=PASS
+
+===== 7. Full Envtest Suite =====
+?   	github.com/egonlin/api/v1	[no test files]
+?   	github.com/egonlin/cmd	[no test files]
+?   	github.com/egonlin/test/utils	[no test files]
+ok  	github.com/egonlin/internal/controller	5.497s
+GO_TEST_RC=0
+PHASE1B_FULL_ENVTEST=PASS
+
+===== 8. make test =====
+go vet ./...
+KUBEBUILDER_ASSETS="$(/mnt/d/projects/mysql-operator/bin/setup-envtest use 1.30.0 --bin-dir /mnt/d/projects/mysql-operator/bin -p path)" go test $(go list ./... | grep -v /e2e) -coverprofile cover.out
+	github.com/egonlin/api/v1		coverage: 0.0% of statements
+	github.com/egonlin/cmd		coverage: 0.0% of statements
+	github.com/egonlin/test/utils		coverage: 0.0% of statements
+ok  	github.com/egonlin/internal/controller	5.909s	coverage: 0.2% of statements
+MAKE_TEST_RC=0
+PHASE1B_MAKE_TEST=PASS
+
+===== 9. Test Contract Inventory =====
+LEGACY_API_CRUD_SPECS=1
+ADMISSION_CONTRACT_SPECS=11
+STATUS_SUBRESOURCE_SPECS=1
+TOTAL_EXPECTED_SPECS=13
+
+===== 10. Final Result =====
+PHASE1B_FAILURE_COUNT=0
+PHASE1B_API_FOUNDATION=PASS
+PHASE1B_FINAL_GUARD=PASS
