@@ -162,20 +162,14 @@ func (r *MysqlClusterReconciler) ensureSlaveRoles(ctx context.Context, cluster d
 
 	// 获取所有与集群相关的 Pods
 	podList := &v1.PodList{}
-	listOpts := []client.ListOption{
-		client.InNamespace(cluster.Namespace),
-		//client.MatchingLabels{"app": "mysql", "cluster": cluster.Name},
-		client.MatchingLabels{"app": "mysql"},
-	}
-	if err := r.List(ctx, podList, listOpts...); err != nil {
+	if err := r.List(ctx, podList, mysqlClusterPodListOptions(&cluster, "")...); err != nil {
 		return err
 	}
 
 	// 遍历所有 Pods，确保非 master 的 Pod 的 role 都是 slave
 	for _, pod := range podList.Items {
-		if pod.Name != masterPodName && pod.Labels["role"] != "slave" {
-			pod.Labels["role"] = "slave"
-			if err := r.Update(ctx, &pod); err != nil {
+		if pod.Name != masterPodName && (pod.Labels[LegacyLabelRole] != "slave" || pod.Labels[LabelMysqlRole] != "slave") {
+			if err := r.labelPod(ctx, pod.Name, "slave", cluster); err != nil {
 				return err
 			}
 		}

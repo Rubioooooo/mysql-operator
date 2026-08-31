@@ -7,9 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/apimachinery/pkg/labels"
-	"sigs.k8s.io/controller-runtime/pkg/client" // 提供与 Kubernetes API 交互的客户端
-
 	databasev1 "github.com/egonlin/api/v1" // 导入自定义的 MySQLCluster API 资源定义
 	v1 "k8s.io/api/core/v1"                // 核心 Kubernetes API 对象，例如 Pod 和 Service
 )
@@ -21,15 +18,9 @@ GTID模式：MHA会比较每个从库的GTID集合。选择包含主库GTID率�
 */
 
 func (r *MysqlClusterReconciler) electNewMaster(ctx context.Context, cluster databasev1.MysqlCluster) (string, []string, error) {
-	// 定义列出从库 Pod 的选项
-	listOpts := client.ListOptions{
-		Namespace:     cluster.Namespace,
-		LabelSelector: labels.SelectorFromSet(map[string]string{"role": "slave"}),
-	}
-
 	// 列出从库 Pods
 	slavePods := &v1.PodList{}
-	if err := r.List(ctx, slavePods, &listOpts); err != nil {
+	if err := r.List(ctx, slavePods, mysqlClusterPodListOptions(&cluster, "slave")...); err != nil {
 		return "", nil, fmt.Errorf("failed to list slave pods: %v", err)
 	}
 
@@ -188,18 +179,10 @@ func (r *MysqlClusterReconciler) calculateDataScore(dataSize int64) float64 {
 func (r *MysqlClusterReconciler) startAndUpdateGTIDSnapshot(ctx context.Context, cluster databasev1.MysqlCluster) {
 	go func() {
 		for {
-			// 标签选择器，用于筛选主库 Pod
-			//labelSelector := client.MatchingLabels{"role": "master"}
-
-			listOptions := &client.ListOptions{
-				Namespace:     cluster.Namespace,
-				LabelSelector: labels.SelectorFromSet(map[string]string{"role": "master"}),
-			}
-
 			podList := &v1.PodList{}
 
 			// 获取带有标签 role: master 的 Pod
-			err := r.List(ctx, podList, listOptions)
+			err := r.List(ctx, podList, mysqlClusterPodListOptions(&cluster, "master")...)
 			if err != nil {
 				fmt.Printf("Error listing pods: %v\n", err)
 				time.Sleep(1 * time.Second) // 短暂的等待再重试

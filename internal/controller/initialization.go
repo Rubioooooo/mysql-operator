@@ -13,11 +13,11 @@ func (r *MysqlClusterReconciler) init(ctx context.Context, cluster *databasev1.M
 	// 1、创建主库和从库的 Service
 	log := log.FromContext(ctx)
 
-	if _, err := r.getOrCreateService(ctx, cluster.Spec.MasterService, "master", cluster.Namespace, *cluster); err != nil {
+	if _, err := r.getOrCreateService(ctx, cluster.Spec.MasterService, "master", cluster.Namespace, cluster); err != nil {
 		log.Info("创建svc失败1")
 		return fmt.Errorf("failed to create master service: %v", err)
 	}
-	if _, err := r.getOrCreateService(ctx, cluster.Spec.SlaveService, "slave", cluster.Namespace, *cluster); err != nil {
+	if _, err := r.getOrCreateService(ctx, cluster.Spec.SlaveService, "slave", cluster.Namespace, cluster); err != nil {
 		log.Info("创建svc失败1")
 
 		return fmt.Errorf("failed to create slave service: %v", err)
@@ -31,8 +31,8 @@ func (r *MysqlClusterReconciler) init(ctx context.Context, cluster *databasev1.M
 
 	// 3、根据副本数创建出cm
 	for i := int32(1); i <= replicas; i++ {
-		configMapName := fmt.Sprintf("mysql-config-%02d", i) // 名称格式为mysql-config-01，注%02d代表有两位数字，不足位则补0
-		serverID := int(i)                                   // 这里的 serverID 与副本序号一一对应
+		configMapName := mysqlConfigMapName(cluster, int(i))
+		serverID := int(i) // 这里的 serverID 与副本序号一一对应
 
 		if err := r.createConfigMap(ctx, configMapName, serverID, cluster.Namespace, cluster); err != nil {
 			return fmt.Errorf("failed to create configmap %s: %v", configMapName, err)
@@ -43,7 +43,7 @@ func (r *MysqlClusterReconciler) init(ctx context.Context, cluster *databasev1.M
 	storageClassName := cluster.Spec.Storage.StorageClassName
 	storageSize := cluster.Spec.Storage.Size.String()
 	for i := int32(1); i <= replicas; i++ {
-		pvcName := fmt.Sprintf("mysql-%02d", i)
+		pvcName := mysqlPVCName(cluster, int(i))
 		if err := r.createPVC(ctx, pvcName, storageClassName, cluster.Namespace, storageSize, cluster); err != nil {
 			return err
 		}
@@ -51,10 +51,10 @@ func (r *MysqlClusterReconciler) init(ctx context.Context, cluster *databasev1.M
 
 	// 5、根据副本数创建出Pod
 	for i := int32(1); i <= replicas; i++ {
-		podName := fmt.Sprintf("mysql-%02d", i)
-		pvcName := fmt.Sprintf("mysql-%02d", i)
+		podName := mysqlPodName(cluster, int(i))
+		pvcName := mysqlPVCName(cluster, int(i))
 		log.Info("准备创pod", "podName", podName)
-		configMapName := fmt.Sprintf("mysql-config-%02d", i) // 名称格式为mysql-01
+		configMapName := mysqlConfigMapName(cluster, int(i))
 		//if err := r.createPod(ctx, podName, cluster.Spec.Image, cluster.Spec.MasterConfig, cluster.Namespace, cluster); err != nil {
 		if err := r.createPod(ctx, podName, cluster.Spec.Image, configMapName, pvcName, cluster.Namespace, cluster); err != nil {
 			return fmt.Errorf("failed to create pod %s: %v", podName, err)
@@ -62,10 +62,10 @@ func (r *MysqlClusterReconciler) init(ctx context.Context, cluster *databasev1.M
 	}
 
 	// 6、制作主从关系
-	masterPodName := "mysql-01"
+	masterPodName := mysqlPodName(cluster, 1)
 	slavePodNames := []string{}
 	for i := int32(2); i <= replicas; i++ {
-		slavePodNames = append(slavePodNames, fmt.Sprintf("mysql-%02d", i))
+		slavePodNames = append(slavePodNames, mysqlPodName(cluster, int(i)))
 	}
 	log.Info("init函数", "masterPodName", masterPodName, "slavePodNames", slavePodNames)
 

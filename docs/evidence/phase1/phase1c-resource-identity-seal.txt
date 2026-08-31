@@ -1,0 +1,58 @@
+===== Phase 1-C Resource Identity Final Seal =====
+
+===== 1. Git Baseline =====
+HEAD=3a09c072d2e10f9a2b2d7bea5e47b458fa2001df
+## mysql-operator-dev...origin/mysql-operator-dev
+ M internal/controller/elect_new_master.go
+ M internal/controller/initialization.go
+ M internal/controller/mysqlcluster_controller.go
+ M internal/controller/reconcile_master_slave.go
+ M internal/controller/reconcile_replicas.go
+ M internal/controller/utlis.go
+?? docs/evidence/phase1/phase1c-resource-identity-seal.txt
+?? internal/controller/resource_identity.go
+?? internal/controller/resource_identity_test.go
+
+===== 2. Diff Check =====
+PHASE1C_DIFF_CHECK=PASS
+
+===== 3. go vet =====
+GO_VET_RC=0
+PHASE1C_GO_VET=PASS
+
+===== 4. Envtest =====
+?   	github.com/egonlin/api/v1	[no test files]
+?   	github.com/egonlin/cmd	[no test files]
+?   	github.com/egonlin/test/utils	[no test files]
+ok  	github.com/egonlin/internal/controller	6.343s
+GO_TEST_RC=0
+PHASE1C_FULL_ENVTEST=PASS
+
+===== 5. make test =====
+go vet ./...
+KUBEBUILDER_ASSETS="$(/mnt/d/projects/mysql-operator/bin/setup-envtest use 1.30.0 --bin-dir /mnt/d/projects/mysql-operator/bin -p path)" go test $(go list ./... | grep -v /e2e) -coverprofile cover.out
+	github.com/egonlin/api/v1		coverage: 0.0% of statements
+	github.com/egonlin/cmd		coverage: 0.0% of statements
+	github.com/egonlin/test/utils		coverage: 0.0% of statements
+ok  	github.com/egonlin/internal/controller	5.541s	coverage: 15.8% of statements
+MAKE_TEST_RC=0
+PHASE1C_MAKE_TEST=PASS
+
+===== 6. Identity Guards =====
+PHASE1C_WIDE_SELECTOR_GUARD=PASS
+PHASE1C_NATIVE_OWNERREF_GUARD=PASS
+PHASE1C_UID_ROLE_SELECTOR_GUARD=PASS
+PHASE1C_CONTROLLED_BY_GUARD=PASS
+PHASE1C_BOUNDED_CHILD_NAMING_GUARD=PASS
+
+===== 7. HA Isolation =====
+PHASE1C_HA_ISOLATION_GUARD=PASS
+
+===== 8. Test Inventory =====
+PHASE1C_IDENTITY_SPEC_COUNT=8
+PHASE1C_TEST_INVENTORY=PASS
+
+===== 9. Final Result =====
+PHASE1C_FAILURE_COUNT=0
+PHASE1C_RESOURCE_IDENTITY=PASS
+PHASE1C_FINAL_GUARD=PASS

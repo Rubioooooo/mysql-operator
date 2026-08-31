@@ -14,10 +14,8 @@ import (
 )
 
 const (
-	MySQLPassword          = "password"           // Hardcoded MySQL password
+	MySQLPassword = "password" // Hardcoded MySQL password
 	//KubeConfigPath         = "/root/.kube/config" // Hardcoded kubeconfig path
-	MysqlClusterKind       = "MysqlCluster"
-	MysqlClusterAPIVersion = "apps.egonlin.com/v1"
 )
 
 // MysqlClusterReconciler reconciles a MysqlCluster object
@@ -105,6 +103,7 @@ func (r *MysqlClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&v1.Pod{}).
 		Complete(r)
 }
+
 // bug说明
 // 上述SetupWithManager的核心在与针对MysqlCluster资源所拥有的Pod控制器只会在 MysqlCluster 对象本身发生 创建 / 更新 / 删除 时被触发
 // 我检测当pod发生挂掉时，会触发调谐函数的执行，检查主从状态的逻辑是根据endpoint来判断的，如果endpoint控制器摘出失效的ednpoint的慢了（异步执行的），会导致我的调谐逻辑运行失效，所有从库的主从状态都挂掉，

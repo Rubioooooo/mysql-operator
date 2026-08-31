@@ -3,9 +3,7 @@ package controller
 import (
 	"context" // 用于处理上下文，提供超时、取消等操作
 	"fmt"     // 格式化I/O函数，如字符串格式化和打印
-	"k8s.io/apimachinery/pkg/labels"
 	"regexp"
-	"sigs.k8s.io/controller-runtime/pkg/client" // 提供与 Kubernetes API 交互的客户端
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"strconv"
 
@@ -33,11 +31,16 @@ func (r *MysqlClusterReconciler) reconcileReplicas(ctx context.Context, cluster 
 
 		// 创建缺失的 Pod 和 ConfigMap
 		for _, podNumber := range missingPodNumbers {
-			podName := fmt.Sprintf("mysql-%s", podNumber)
-			configMapName := fmt.Sprintf("mysql-config-%s", podNumber)
+			ordinal, err := strconv.Atoi(podNumber)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("invalid pod ordinal %q: %w", podNumber, err)
+			}
+
+			podName := mysqlPodName(&cluster, ordinal)
+			configMapName := mysqlConfigMapName(&cluster, ordinal)
 
 			// 如果volume不存在需要创建，方法内部有判断机制
-			pvcName := fmt.Sprintf("mysql-%s", podNumber) // pvc名字与pod名是一致的
+			pvcName := mysqlPVCName(&cluster, ordinal) // pvc名字与pod名是一致的
 			storageClassName := cluster.Spec.Storage.StorageClassName
 			storageSize := cluster.Spec.Storage.Size.String()
 			if err := r.createPVC(ctx, pvcName, storageClassName, cluster.Namespace, storageSize, &cluster); err != nil {
@@ -45,8 +48,7 @@ func (r *MysqlClusterReconciler) reconcileReplicas(ctx context.Context, cluster 
 			}
 
 			// 如果是全新的副本则需要创建出对应的configmap
-			serverIdNum, _ := strconv.Atoi(podNumber) // podNumber格式为如01、02、03，需要转换
-			if err := r.createConfigMap(ctx, configMapName, serverIdNum, cluster.Namespace, &cluster); err != nil {
+			if err := r.createConfigMap(ctx, configMapName, ordinal, cluster.Namespace, &cluster); err != nil {
 				return ctrl.Result{}, err
 			}
 
@@ -68,14 +70,8 @@ func (r *MysqlClusterReconciler) getActualReplicaInfo(ctx context.Context, clust
 	// 创建一个 Pod 列表对象
 	podList := &v1.PodList{}
 
-	// 创建 ListOptions，根据需要筛选 Pod（使用标签选择器或其他筛选条件）
-	listOptions := &client.ListOptions{
-		Namespace:     cluster.Namespace,
-		LabelSelector: labels.SelectorFromSet(map[string]string{"app": "mysql"}),
-	}
-
 	// 获取 Pod 列表
-	if err := r.List(ctx, podList, listOptions); err != nil {
+	if err := r.List(ctx, podList, mysqlClusterPodListOptions(&cluster, "")...); err != nil {
 		log.Error(err, "获取 Pod 列表失败")
 		return 0, nil
 	}
@@ -95,7 +91,7 @@ func (r *MysqlClusterReconciler) getActualReplicaInfo(ctx context.Context, clust
 // extractPodNumbers 提取 Pod 名称中的编号
 func extractPodNumbers(podNames []string) []string {
 	var podNumbers []string
-	var podNamePattern = regexp.MustCompile(`mysql-(\d+)`)
+	var podNamePattern = regexp.MustCompile(`mysql-(\d+)$`)
 
 	for _, name := range podNames {
 		if matches := podNamePattern.FindStringSubmatch(name); len(matches) > 1 {

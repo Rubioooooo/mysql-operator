@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client" // 提供与 Kubernetes API 交互的客户端
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	databasev1 "github.com/egonlin/api/v1" // 导入自定义的 MySQLCluster API 资源定义
@@ -28,18 +29,14 @@ func (r *MysqlClusterReconciler) createConfigMap(ctx context.Context, name strin
 	existingConfigMap := &v1.ConfigMap{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, existingConfigMap)
 	if err == nil {
-		// ConfigMap 已经存在
+		if err := validateControlledBy(existingConfigMap, cluster, "ConfigMap"); err != nil {
+			return err
+		}
 		r.Log.Info("ConfigMap already exists", "ConfigMap.Name", name)
 		return nil
 	}
-
-	// 定义 OwnerReference
-	ownerRef := metav1.OwnerReference{
-		APIVersion: MysqlClusterAPIVersion, // 使用常量
-		Kind:       MysqlClusterKind,       // 使用常量
-		Name:       cluster.Name,
-		UID:        cluster.UID,
-		Controller: func(b bool) *bool { return &b }(true), // 使用匿名函数创建布尔值指针, 指示此 OwnerReference 是控制器，这一条非常关键
+	if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to get ConfigMap %s/%s: %w", namespace, name, err)
 	}
 
 	// 定义 ConfigMap 数据
@@ -59,13 +56,14 @@ relay_log_purge=0
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
-			OwnerReferences: []metav1.OwnerReference{
-				ownerRef,
-			},
+			Labels:    mysqlIdentityLabels(cluster),
 		},
 		Data: map[string]string{
 			"my.cnf": configMapData,
 		},
+	}
+	if err := controllerutil.SetControllerReference(cluster, configMap, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set MysqlCluster %s as controller of ConfigMap %s/%s: %w", cluster.Name, namespace, name, err)
 	}
 
 	// 创建 ConfigMap
@@ -83,18 +81,14 @@ func (r *MysqlClusterReconciler) createPVC(ctx context.Context, name, storageCla
 	existingPVC := &v1.PersistentVolumeClaim{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, existingPVC)
 	if err == nil {
-		// PVC 已经存在
+		if err := validateControlledBy(existingPVC, cluster, "PersistentVolumeClaim"); err != nil {
+			return err
+		}
 		r.Log.Info("PVC already exists", "PVC.Name", name)
 		return nil
 	}
-
-	// 定义 OwnerReference
-	ownerRef := metav1.OwnerReference{
-		APIVersion: "database.kubebuilder.io/v1", // 根据实际的 API Version 设置
-		Kind:       "MysqlCluster",               // 根据实际的 Kind 设置
-		Name:       cluster.Name,
-		UID:        cluster.UID,
-		Controller: func(b bool) *bool { return &b }(true),
+	if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to get PersistentVolumeClaim %s/%s: %w", namespace, name, err)
 	}
 
 	// 创建 PVC 定义
@@ -102,12 +96,7 @@ func (r *MysqlClusterReconciler) createPVC(ctx context.Context, name, storageCla
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
-			Labels: map[string]string{
-				"app": "mysql",
-			},
-			OwnerReferences: []metav1.OwnerReference{
-				ownerRef,
-			},
+			Labels:    mysqlIdentityLabels(cluster),
 		},
 		Spec: v1.PersistentVolumeClaimSpec{
 			AccessModes: []v1.PersistentVolumeAccessMode{
@@ -120,6 +109,9 @@ func (r *MysqlClusterReconciler) createPVC(ctx context.Context, name, storageCla
 			},
 			StorageClassName: &storageClassName,
 		},
+	}
+	if err := controllerutil.SetControllerReference(cluster, pvc, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set MysqlCluster %s as controller of PersistentVolumeClaim %s/%s: %w", cluster.Name, namespace, name, err)
 	}
 
 	// 创建 PVC
@@ -137,18 +129,14 @@ func (r *MysqlClusterReconciler) createPod(ctx context.Context, name, image, con
 	existingPod := &v1.Pod{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, existingPod)
 	if err == nil {
-		// Pod 已经存在
+		if err := validateControlledBy(existingPod, cluster, "Pod"); err != nil {
+			return err
+		}
 		r.Log.Info("Pod already exists", "Pod.Name", name)
 		return nil
 	}
-
-	// 定义 OwnerReference
-	ownerRef := metav1.OwnerReference{
-		APIVersion: MysqlClusterAPIVersion, // 使用常量
-		Kind:       MysqlClusterKind,       // 使用常量
-		Name:       cluster.Name,
-		UID:        cluster.UID,
-		Controller: func(b bool) *bool { return &b }(true), // 使用匿名函数创建布尔值指针, 指示此 OwnerReference 是控制器，这一条非常关键
+	if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to get Pod %s/%s: %w", namespace, name, err)
 	}
 
 	// 获取resources资源限制
@@ -168,16 +156,7 @@ func (r *MysqlClusterReconciler) createPod(ctx context.Context, name, image, con
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
-			Labels: map[string]string{
-				"app": "mysql",
-				//"role": role,  // 后续制作完主从后会打上该标签
-			},
-
-			// 当一个对象（例如自定义资源）被删除时，Kubernetes 会自动删除与它关联的子资源。这种行为被称为级联删除。
-			// 通过在子资源（例如 Pod 或 Service）中设置 OwnerReferences，Kubernetes 知道该资源是由哪个父对象创建的，并且当父对象删除时，子资源也会被自动删除。
-			OwnerReferences: []metav1.OwnerReference{
-				ownerRef,
-			},
+			Labels:    mysqlIdentityLabels(cluster),
 		},
 		Spec: v1.PodSpec{
 			Containers: []v1.Container{
@@ -232,6 +211,9 @@ func (r *MysqlClusterReconciler) createPod(ctx context.Context, name, image, con
 			},
 		},
 	}
+	if err := controllerutil.SetControllerReference(cluster, pod, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set MysqlCluster %s as controller of Pod %s/%s: %w", cluster.Name, namespace, name, err)
+	}
 
 	// 创建 Pod
 	if err := r.Create(ctx, pod); err != nil {
@@ -272,7 +254,7 @@ func isPodHealthy(pod v1.Pod) bool {
 }
 
 // 获取或创建 Service 的函数
-func (r *MysqlClusterReconciler) getOrCreateService(ctx context.Context, serviceName, role, namespace string, cluster databasev1.MysqlCluster) (*v1.Service, error) {
+func (r *MysqlClusterReconciler) getOrCreateService(ctx context.Context, serviceName, role, namespace string, cluster *databasev1.MysqlCluster) (*v1.Service, error) {
 	// 定义 Service 对象
 	service := &v1.Service{}
 	serviceKey := client.ObjectKey{Namespace: namespace, Name: serviceName}
@@ -281,7 +263,11 @@ func (r *MysqlClusterReconciler) getOrCreateService(ctx context.Context, service
 	if err := r.Get(ctx, serviceKey, service); err != nil {
 		if errors.IsNotFound(err) {
 			// 如果 Service 不存在，则创建它
-			service = r.createService(serviceName, role, namespace, cluster)
+			var createErr error
+			service, createErr = r.createService(serviceName, role, namespace, cluster)
+			if createErr != nil {
+				return nil, createErr
+			}
 
 			// 调用 r.Create 将上面生成的 Service 对象提交给 k8s
 			if err := r.Create(ctx, service); err != nil {
@@ -291,6 +277,8 @@ func (r *MysqlClusterReconciler) getOrCreateService(ctx context.Context, service
 			// 其他错误返回
 			return nil, err
 		}
+	} else if err := validateControlledBy(service, cluster, "Service"); err != nil {
+		return nil, err
 	}
 
 	// 返回获取到的或者新创建的 Service 对象
@@ -298,34 +286,16 @@ func (r *MysqlClusterReconciler) getOrCreateService(ctx context.Context, service
 }
 
 // 创建 Service 对象的辅助函数
-func (r *MysqlClusterReconciler) createService(name, role, namespace string, cluster databasev1.MysqlCluster) *v1.Service {
-	// 定义 OwnerReference
-	ownerRef := metav1.OwnerReference{
-		APIVersion: MysqlClusterAPIVersion,
-		Kind:       MysqlClusterKind, // MysqlCluster
-		Name:       cluster.Name,     // mysqlcluster-sample
-		UID:        cluster.UID,
-		Controller: func(b bool) *bool { return &b }(true),
-	}
-
+func (r *MysqlClusterReconciler) createService(name, role, namespace string, cluster *databasev1.MysqlCluster) (*v1.Service, error) {
 	// 定义 Service 对象
-	return &v1.Service{
+	service := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
-			Labels: map[string]string{
-				"app":  "mysql",
-				"role": role,
-			},
-			OwnerReferences: []metav1.OwnerReference{
-				ownerRef,
-			},
+			Labels:    mysqlRoleLabels(cluster, role),
 		},
 		Spec: v1.ServiceSpec{
-			Selector: map[string]string{
-				"app":  "mysql",
-				"role": role,
-			},
+			Selector: mysqlRoleLabels(cluster, role),
 			Ports: []v1.ServicePort{
 				{
 					Port:       3306,
@@ -336,6 +306,11 @@ func (r *MysqlClusterReconciler) createService(name, role, namespace string, clu
 			Type: v1.ServiceTypeClusterIP,
 		},
 	}
+	if err := controllerutil.SetControllerReference(cluster, service, r.Scheme); err != nil {
+		return nil, fmt.Errorf("failed to set MysqlCluster %s as controller of Service %s/%s: %w", cluster.Name, namespace, name, err)
+	}
+
+	return service, nil
 }
 
 // 制作主从同步的函数
@@ -399,12 +374,16 @@ func (r *MysqlClusterReconciler) labelPod(ctx context.Context, podName, role str
 	if err := r.Get(ctx, podKey, pod); err != nil {
 		return fmt.Errorf("failed to get pod %s: %v", podName, err)
 	}
+	if err := validateControlledBy(pod, &cluster, "Pod"); err != nil {
+		return err
+	}
 
 	// 更新 Pod 标签
 	if pod.Labels == nil {
 		pod.Labels = make(map[string]string)
 	}
-	pod.Labels["role"] = role
+	pod.Labels[LegacyLabelRole] = role
+	pod.Labels[LabelMysqlRole] = role
 
 	if err := r.Update(ctx, pod); err != nil {
 		return fmt.Errorf("failed to update pod %s: %v", podName, err)
