@@ -21,64 +21,92 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	appsv1 "github.com/egonlin/api/v1"
 )
 
-var _ = Describe("MysqlCluster Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+var _ = Describe("MysqlCluster envtest API boundary", func() {
+	const (
+		resourceName      = "test-resource"
+		resourceNamespace = "default"
+	)
 
-		ctx := context.Background()
+	ctx := context.Background()
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+	namespacedName := types.NamespacedName{
+		Name:      resourceName,
+		Namespace: resourceNamespace,
+	}
+
+	AfterEach(func() {
+		resource := &appsv1.MysqlCluster{}
+		err := k8sClient.Get(ctx, namespacedName, resource)
+
+		if errors.IsNotFound(err) {
+			return
 		}
-		mysqlcluster := &appsv1.MysqlCluster{}
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind MysqlCluster")
-			err := k8sClient.Get(ctx, typeNamespacedName, mysqlcluster)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &appsv1.MysqlCluster{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
+		Expect(err).NotTo(HaveOccurred())
+
+		By("cleaning up the MysqlCluster resource")
+		Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+	})
+
+	It("should create, read, and delete a structurally valid MysqlCluster", func() {
+		resource := &appsv1.MysqlCluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resourceName,
+				Namespace: resourceNamespace,
+			},
+			Spec: appsv1.MysqlClusterSpec{
+				Image:         "example.com/mysql:5.7",
+				Replicas:      3,
+				MasterService: "test-master",
+				SlaveService:  "test-replica",
+				Storage: appsv1.StorageConfig{
+					StorageClassName: "test-storage",
+					Size:             "1Gi",
+				},
+				Resources: appsv1.ResourceRequirements{
+					Requests: appsv1.ResourceRequests{
+						CPU:    "100m",
+						Memory: "128Mi",
 					},
-					// TODO(user): Specify other spec details if needed.
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
-			}
-		})
+					Limits: appsv1.ResourceLimits{
+						CPU:    "500m",
+						Memory: "512Mi",
+					},
+				},
+			},
+		}
 
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &appsv1.MysqlCluster{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
+		By("creating the MysqlCluster in the isolated envtest API server")
+		Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			By("Cleanup the specific resource instance MysqlCluster")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &MysqlClusterReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+		stored := &appsv1.MysqlCluster{}
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
-		})
+		By("reading the MysqlCluster back from the isolated envtest API server")
+		Expect(k8sClient.Get(ctx, namespacedName, stored)).To(Succeed())
+
+		Expect(stored.Spec.Image).To(Equal("example.com/mysql:5.7"))
+		Expect(stored.Spec.Replicas).To(Equal(int32(3)))
+		Expect(stored.Spec.MasterService).To(Equal("test-master"))
+		Expect(stored.Spec.SlaveService).To(Equal("test-replica"))
+		Expect(stored.Spec.Storage.StorageClassName).To(Equal("test-storage"))
+		Expect(stored.Spec.Storage.Size).To(Equal("1Gi"))
+
+		By("deleting the MysqlCluster")
+		Expect(k8sClient.Delete(ctx, stored)).To(Succeed())
+
+		Eventually(func() bool {
+			current := &appsv1.MysqlCluster{}
+			err := k8sClient.Get(ctx, namespacedName, current)
+			return errors.IsNotFound(err)
+		}).Should(BeTrue())
 	})
 })

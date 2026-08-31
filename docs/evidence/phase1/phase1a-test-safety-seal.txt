@@ -1,0 +1,82 @@
+===== Phase 1-A Final Safety Seal =====
+
+===== 1. Git Baseline =====
+## mysql-operator-dev...origin/mysql-operator-dev
+ M Makefile
+ M internal/controller/mysqlcluster_controller_test.go
+ M internal/controller/suite_test.go
+ M test/e2e/e2e_suite_test.go
+ M test/e2e/e2e_test.go
+020b324d76dd53066db04e29b7a9e9e21b3c1284
+
+===== 2. Diff Check =====
+DIFF_CHECK=PASS
+
+===== 3. Default E2E Discovery Guard =====
+DEFAULT_E2E_DISCOVERY=PASS
+
+===== 4. Explicit E2E Discovery Guard =====
+github.com/egonlin/test/e2e
+EXPLICIT_E2E_DISCOVERY=PASS
+
+===== 5. Resolve Envtest Assets =====
+ENVTEST_ASSETS=/mnt/d/projects/mysql-operator/bin/k8s/1.30.0-linux-amd64
+ENVTEST_ASSETS_READY=PASS
+
+===== 6. Direct go test ./... Safety Regression =====
+?   	github.com/egonlin/api/v1	[no test files]
+?   	github.com/egonlin/cmd	[no test files]
+?   	github.com/egonlin/test/utils	[no test files]
+ok  	github.com/egonlin/internal/controller	6.894s
+DIRECT_GO_TEST_RC=0
+DIRECT_GO_TEST_SAFE=PASS
+
+===== 7. make test Safety Regression =====
+go vet ./...
+KUBEBUILDER_ASSETS="$(/mnt/d/projects/mysql-operator/bin/setup-envtest use 1.30.0 --bin-dir /mnt/d/projects/mysql-operator/bin -p path)" go test $(go list ./... | grep -v /e2e) -coverprofile cover.out
+	github.com/egonlin/api/v1		coverage: 0.0% of statements
+	github.com/egonlin/cmd		coverage: 0.0% of statements
+	github.com/egonlin/test/utils		coverage: 0.0% of statements
+ok  	github.com/egonlin/internal/controller	6.379s	coverage: 0.2% of statements
+MAKE_TEST_RC=0
+MAKE_TEST_SAFE=PASS
+
+===== 8. E2E Missing Opt-In Negative Test =====
+E2E disabled: set MYSQL_OPERATOR_E2E=1 only for an isolated E2E environment
+make: *** [Makefile:74: test-e2e] Error 1
+E2E_NO_OPTIN_RC=2
+E2E_NO_OPTIN_DENY=PASS
+
+===== 9. Protected OpsLab Context Negative Test =====
+CURRENT_CONTEXT=kubernetes-admin@opslab-k8s
+OPSLAB_CONTEXT_PRECONDITION=PASS
+go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+=== RUN   TestE2E
+    e2e_suite_test.go:100: E2E denied: protected OpsLab context "kubernetes-admin@opslab-k8s" must never be used for mysql-operator E2E
+--- FAIL: TestE2E (0.04s)
+FAIL
+FAIL	github.com/egonlin/test/e2e	0.041s
+FAIL
+make: *** [Makefile:76: test-e2e] Error 1
+E2E_OPSLAB_RC=2
+E2E_OPSLAB_DENY=PASS
+
+===== 10. Direct E2E Without Build Tag =====
+package github.com/egonlin/test/e2e: build constraints exclude all Go files in /mnt/d/projects/mysql-operator/test/e2e
+DIRECT_E2E_WITHOUT_TAG_RC=1
+DIRECT_E2E_WITHOUT_TAG_DENY=PASS
+
+===== 11. Test Worktree Immutability =====
+TEST_TRACKED_WORKTREE_IMMUTABILITY=PASS
+
+===== 12. Final Worktree =====
+ M Makefile
+ M internal/controller/mysqlcluster_controller_test.go
+ M internal/controller/suite_test.go
+ M test/e2e/e2e_suite_test.go
+ M test/e2e/e2e_test.go
+
+===== Phase 1-A Final Result =====
+PHASE1A_FAILURE_COUNT=0
+PHASE1A_TEST_SAFETY_BOUNDARY=PASS
+PHASE1A_FINAL_GUARD=PASS

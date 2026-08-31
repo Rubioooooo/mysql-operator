@@ -60,13 +60,26 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+test: test-envtest ## Run safe non-E2E tests.
 
-# Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
-.PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
+.PHONY: test-envtest
+test-envtest: vet envtest ## Run non-E2E tests using controller-runtime envtest.
+	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+
+# E2E is destructive and must run only against an explicitly authorized,
+# dedicated Kind cluster. The Go E2E suite performs the same checks again
+# so direct `go test ./test/e2e` cannot bypass this boundary.
+.PHONY: test-e2e
 test-e2e:
-	go test ./test/e2e/ -v -ginkgo.v
+	@test "$${MYSQL_OPERATOR_E2E:-}" = "1" || { \
+		echo "E2E disabled: set MYSQL_OPERATOR_E2E=1 only for an isolated E2E environment"; \
+		exit 1; \
+	}
+	@test -n "$${MYSQL_OPERATOR_E2E_CONTEXT:-}" || { \
+		echo "E2E disabled: MYSQL_OPERATOR_E2E_CONTEXT must be explicitly set"; \
+		exit 1; \
+	}
+	go test -tags=e2e ./test/e2e/ -v -ginkgo.v
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
