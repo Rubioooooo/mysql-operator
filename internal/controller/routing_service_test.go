@@ -11,7 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 func TestMysqlRoutingServiceReconciliation(t *testing.T) {
@@ -150,30 +149,19 @@ func TestPrimaryRolePublicationOrdering(t *testing.T) {
 	ctx := context.Background()
 	cluster := statefulSetResourceTestCluster("role-order", types.UID("role-order-uid"))
 	cluster.Spec.MasterService = "role-order-primary"
-	scheme := newStatefulSetReconcileTestScheme(t)
 
-	newPrimary := func(t *testing.T) *corev1.Pod {
+	newPrimary := func(t *testing.T) (client.Object, *corev1.Pod) {
 		t.Helper()
-		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "role-order-mysql-1",
-				Namespace: cluster.Namespace,
-				Labels:    mysqlIdentityLabels(cluster),
-			},
-			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: mysqlContainerName, Image: cluster.Spec.Image}}},
-		}
-		if err := controllerutil.SetControllerReference(cluster, pod, scheme); err != nil {
-			t.Fatalf("set controller reference: %v", err)
-		}
-		return pod
+		statefulSet := controlledStatefulSetForLifecycleTest(t, cluster, types.UID("role-order-statefulset-uid"))
+		pod := statefulSetPodForLifecycleTest(t, cluster, statefulSet, 1)
+		return statefulSet, pod
 	}
 
 	t.Run("failed database transition does not publish primary role", func(t *testing.T) {
 		g := NewWithT(t)
-		pod := newPrimary(t)
+		statefulSet, pod := newPrimary(t)
 		reconciler := &MysqlClusterReconciler{
-			Client: newStatefulSetReconcileMemoryClient(pod),
-			Scheme: scheme,
+			Client: newStatefulSetReconcileMemoryClient(statefulSet, pod),
 			execCommandOnPodFn: func(*corev1.Pod, string) (string, error) {
 				return "", errors.New("database transition failed")
 			},
@@ -189,11 +177,10 @@ func TestPrimaryRolePublicationOrdering(t *testing.T) {
 
 	t.Run("successful database transition precedes primary role publication", func(t *testing.T) {
 		g := NewWithT(t)
-		pod := newPrimary(t)
+		statefulSet, pod := newPrimary(t)
 		var reconciler *MysqlClusterReconciler
 		reconciler = &MysqlClusterReconciler{
-			Client: newStatefulSetReconcileMemoryClient(pod),
-			Scheme: scheme,
+			Client: newStatefulSetReconcileMemoryClient(statefulSet, pod),
 			execCommandOnPodFn: func(commandPod *corev1.Pod, _ string) (string, error) {
 				observed := &corev1.Pod{}
 				g.Expect(reconciler.Get(ctx, client.ObjectKeyFromObject(commandPod), observed)).To(Succeed())

@@ -56,12 +56,33 @@ func (r *MysqlClusterReconciler) setupMasterSlaveReplication(ctx context.Context
 	return r.setupMysqlReplicas(ctx, slaveNames, cluster)
 }
 
+func (r *MysqlClusterReconciler) validateMysqlPodBeforeSQL(
+	ctx context.Context,
+	pod *v1.Pod,
+	cluster *databasev1.MysqlCluster,
+	action string,
+) error {
+	if err := r.validateStatefulSetManagedMysqlPod(ctx, pod, cluster); err != nil {
+		return fmt.Errorf(
+			"refusing %s on Pod %s/%s before full StatefulSet ownership validation: %w",
+			action,
+			pod.Namespace,
+			pod.Name,
+			err,
+		)
+	}
+	return nil
+}
+
 func (r *MysqlClusterReconciler) setupMysqlPrimary(ctx context.Context, masterName string, cluster databasev1.MysqlCluster) error {
 	// 获取主库 Pod 对象
 	masterPod := &v1.Pod{}
 	masterPodKey := client.ObjectKey{Namespace: cluster.Namespace, Name: masterName}
 	if err := r.Get(ctx, masterPodKey, masterPod); err != nil {
 		return fmt.Errorf("failed to get master pod %s: %v", masterName, err)
+	}
+	if err := r.validateMysqlPodBeforeSQL(ctx, masterPod, &cluster, "primary preparation SQL"); err != nil {
+		return err
 	}
 
 	// 为主库创建复制用户，并停止slave线程（如果之前自己是从库，那就应该停掉）
@@ -84,6 +105,9 @@ func (r *MysqlClusterReconciler) setupMysqlReplicas(ctx context.Context, slaveNa
 		slavePodKey := client.ObjectKey{Namespace: cluster.Namespace, Name: slaveName}
 		if err := r.Get(ctx, slavePodKey, slavePod); err != nil {
 			return fmt.Errorf("failed to get slave pod %s: %v", slaveName, err)
+		}
+		if err := r.validateMysqlPodBeforeSQL(ctx, slavePod, &cluster, "replica configuration SQL"); err != nil {
+			return err
 		}
 
 		// 配置主从复制: 先停slave，再配置、然后再启slave

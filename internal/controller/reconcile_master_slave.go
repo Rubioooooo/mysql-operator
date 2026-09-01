@@ -146,6 +146,9 @@ func (r *MysqlClusterReconciler) checkReplicaStatus(ctx context.Context, cluster
 		if err := r.Get(ctx, client.ObjectKey{Name: replicaPodName, Namespace: cluster.Namespace}, pod); err != nil {
 			return "", nil, fmt.Errorf("failed to get pod %s: %v", replicaPodName, err)
 		}
+		if err := r.validateMysqlPodBeforeSQL(ctx, pod, &cluster, "replica status SQL"); err != nil {
+			return "", nil, err
+		}
 
 		// 执行 SQL 查询
 		output, err := r.executeCommandOnPod(pod, sqlQuery)

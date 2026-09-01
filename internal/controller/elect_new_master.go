@@ -175,7 +175,14 @@ func (r *MysqlClusterReconciler) calculateDataScore(dataSize int64) float64 {
 	return float64(dataSize)
 }
 
-func (r *MysqlClusterReconciler) updateMasterGTIDSnapshotFromPod(pod *v1.Pod) error {
+func (r *MysqlClusterReconciler) updateMasterGTIDSnapshotFromPod(
+	ctx context.Context,
+	pod *v1.Pod,
+	cluster *databasev1.MysqlCluster,
+) error {
+	if err := r.validateMysqlPodBeforeSQL(ctx, pod, cluster, "primary GTID observation SQL"); err != nil {
+		return err
+	}
 	gtidSet, err := r.getMasterGTIDSet(pod)
 	if err != nil {
 		return err
@@ -210,7 +217,7 @@ func (r *MysqlClusterReconciler) startAndUpdateGTIDSnapshot(ctx context.Context,
 			pod := &podList.Items[0]
 
 			// 更新主库的 GTID 快照
-			if err := r.updateMasterGTIDSnapshotFromPod(pod); err != nil {
+			if err := r.updateMasterGTIDSnapshotFromPod(ctx, pod, &cluster); err != nil {
 				fmt.Printf("Error getting master GTID set: %v\n", err)
 			} else {
 				fmt.Printf("MasterGTIDSnapshot更新成功: %v\n", r.MasterGTIDSnapshot)

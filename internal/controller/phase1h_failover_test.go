@@ -284,14 +284,103 @@ func TestPhase1HElectionCandidateSafety(t *testing.T) {
 	})
 }
 
+func TestPhase1HOwnershipBeforeSQL(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("rejects a same-UID spoofed replica before SHOW SLAVE STATUS", func(t *testing.T) {
+		g := NewWithT(t)
+		cluster := phase1HCluster("phase1h-owner-replica", true)
+		statefulSet := phase1HStatefulSet(t, cluster)
+		primary := phase1HPod(t, cluster, statefulSet, 1, "master", true)
+		spoofedReplica := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "same-uid-spoofed-replica",
+				Namespace: cluster.Namespace,
+				Labels:    mysqlRoleLabels(cluster, "slave"),
+			},
+		}
+		reconciler := phase1HReconciler(
+			t,
+			statefulSet,
+			primary,
+			spoofedReplica,
+			phase1HEndpoints(cluster, primary),
+		)
+
+		_, discoveredNames := reconciler.getActualReplicaInfo(ctx, *cluster)
+		g.Expect(discoveredNames).To(ContainElement(spoofedReplica.Name))
+
+		execCalls := 0
+		reconciler.execCommandOnPodFn = func(*corev1.Pod, string) (string, error) {
+			execCalls++
+			return "Slave_SQL_Running: Yes\nSlave_IO_Running: Yes\n", nil
+		}
+
+		_, _, err := reconciler.checkReplicaStatus(ctx, *cluster)
+		g.Expect(err).To(MatchError(ContainSubstring("replica status SQL")))
+		g.Expect(err).To(MatchError(ContainSubstring("has no controller owner")))
+		g.Expect(execCalls).To(Equal(0))
+	})
+
+	t.Run("rejects a foreign primary Endpoint target before preparation SQL", func(t *testing.T) {
+		g := NewWithT(t)
+		cluster := phase1HCluster("phase1h-owner-primary", true)
+		foreignPrimary := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "foreign-endpoint-primary",
+				Namespace: cluster.Namespace,
+				Labels:    mysqlRoleLabels(cluster, "master"),
+			},
+		}
+		reconciler := phase1HReconciler(t, foreignPrimary, phase1HEndpoints(cluster, foreignPrimary))
+		primarySQLExecCalls := 0
+		reconciler.execCommandOnPodFn = func(*corev1.Pod, string) (string, error) {
+			primarySQLExecCalls++
+			return "", nil
+		}
+
+		_, err := reconciler.reconcileMasterSlave(ctx, *cluster)
+		g.Expect(err).To(MatchError(ContainSubstring("primary preparation SQL")))
+		g.Expect(err).To(MatchError(ContainSubstring("has no controller owner")))
+		g.Expect(primarySQLExecCalls).To(Equal(0))
+	})
+
+	t.Run("rejects a spoofed primary before GTID SQL and snapshot mutation", func(t *testing.T) {
+		g := NewWithT(t)
+		cluster := phase1HCluster("phase1h-owner-gtid", true)
+		spoofedPrimary := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "spoofed-gtid-primary",
+				Namespace: cluster.Namespace,
+				Labels:    mysqlRoleLabels(cluster, "master"),
+			},
+		}
+		reconciler := phase1HReconciler(t, spoofedPrimary)
+		reconciler.MasterGTIDSnapshot = "known-good"
+		gtidExecCalls := 0
+		reconciler.execCommandOnPodFn = func(*corev1.Pod, string) (string, error) {
+			gtidExecCalls++
+			return "spoofed:1-100", nil
+		}
+
+		err := reconciler.updateMasterGTIDSnapshotFromPod(ctx, spoofedPrimary, cluster)
+		g.Expect(err).To(MatchError(ContainSubstring("primary GTID observation SQL")))
+		g.Expect(err).To(MatchError(ContainSubstring("has no controller owner")))
+		g.Expect(gtidExecCalls).To(Equal(0))
+		g.Expect(reconciler.MasterGTIDSnapshot).To(Equal("known-good"))
+	})
+}
+
 func TestPhase1HGTIDFailurePropagationAndSnapshotPreservation(t *testing.T) {
 	g := NewWithT(t)
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "mysql-primary", Namespace: "mysql-system"}}
-	reconciler := &MysqlClusterReconciler{
-		MasterGTIDSnapshot: "known-good",
-		execCommandOnPodFn: func(*corev1.Pod, string) (string, error) {
-			return "", errors.New("mysql authentication failed")
-		},
+	ctx := context.Background()
+	cluster := phase1HCluster("phase1h-gtid-preservation", true)
+	statefulSet := phase1HStatefulSet(t, cluster)
+	pod := phase1HPod(t, cluster, statefulSet, 1, "master", true)
+	reconciler := phase1HReconciler(t, statefulSet, pod)
+	reconciler.MasterGTIDSnapshot = "known-good"
+	reconciler.execCommandOnPodFn = func(*corev1.Pod, string) (string, error) {
+		return "", errors.New("mysql authentication failed")
 	}
 
 	g.Expect(mysqlShowMasterGTIDCommand()).To(ContainSubstring("SELECT @@GLOBAL.gtid_executed"))
@@ -302,6 +391,6 @@ func TestPhase1HGTIDFailurePropagationAndSnapshotPreservation(t *testing.T) {
 	g.Expect(err).To(MatchError(ContainSubstring("mysql authentication failed")))
 	_, err = reconciler.getSlaveGTIDSet(pod)
 	g.Expect(err).To(MatchError(ContainSubstring("mysql authentication failed")))
-	g.Expect(reconciler.updateMasterGTIDSnapshotFromPod(pod)).To(MatchError(ContainSubstring("mysql authentication failed")))
+	g.Expect(reconciler.updateMasterGTIDSnapshotFromPod(ctx, pod, cluster)).To(MatchError(ContainSubstring("mysql authentication failed")))
 	g.Expect(reconciler.MasterGTIDSnapshot).To(Equal("known-good"))
 }
