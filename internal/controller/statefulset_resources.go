@@ -19,6 +19,9 @@ const (
 	mysqlConfigRuntimePath = "/config-runtime"
 	mysqlConfigPath        = "/etc/my.cnf"
 	mysqlDataPath          = "/var/lib/mysql"
+
+	mysqlAliveProbeCommand     = `MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin -uroot ping --silent`
+	mysqlReadinessProbeCommand = `MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -Nse 'SELECT 1' >/dev/null`
 )
 
 const mysqlBaseConfig = `[mysqld]
@@ -42,6 +45,20 @@ fi
 cp /config-base/my.cnf /config-runtime/my.cnf
 printf '\nserver-id=%s\n' "${POD_INDEX}" >> /config-runtime/my.cnf
 `
+
+func mysqlExecProbe(command string, periodSeconds, timeoutSeconds, failureThreshold int32) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{"/bin/sh", "-ec", command},
+			},
+		},
+		PeriodSeconds:    periodSeconds,
+		TimeoutSeconds:   timeoutSeconds,
+		FailureThreshold: failureThreshold,
+		SuccessThreshold: 1,
+	}
+}
 
 func desiredMysqlHeadlessService(cluster *databasev1.MysqlCluster) *corev1.Service {
 	return &corev1.Service{
@@ -165,6 +182,9 @@ func desiredMysqlStatefulSet(cluster *databasev1.MysqlCluster) *appsv1.StatefulS
 							Ports: []corev1.ContainerPort{
 								{Name: "mysql", ContainerPort: 3306, Protocol: corev1.ProtocolTCP},
 							},
+							StartupProbe:   mysqlExecProbe(mysqlAliveProbeCommand, 5, 2, 60),
+							ReadinessProbe: mysqlExecProbe(mysqlReadinessProbeCommand, 5, 2, 3),
+							LivenessProbe:  mysqlExecProbe(mysqlAliveProbeCommand, 10, 2, 6),
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: mysqlConfigRuntimeVolume, MountPath: mysqlConfigPath, SubPath: "my.cnf"},
 								{Name: mysqlDataVolume, MountPath: mysqlDataPath},

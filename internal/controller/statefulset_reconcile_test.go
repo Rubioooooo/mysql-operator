@@ -429,6 +429,7 @@ func TestStatefulSetReconciliationPrimitives(t *testing.T) {
 		statefulSet.Labels = map[string]string{"drifted": "true"}
 		statefulSet.Spec.Template.Labels = map[string]string{"drifted": "true"}
 		statefulSet.Spec.Template.Spec.Containers[0].Image = "example.com/mysql:wrong"
+		statefulSet.Spec.Template.Spec.Containers[0].ReadinessProbe.Exec.Command[2] = "exit 1"
 		statefulSet.Spec.UpdateStrategy = appsv1.StatefulSetUpdateStrategy{Type: appsv1.RollingUpdateStatefulSetStrategyType}
 		reconciler := newStatefulSetReconcileTestReconciler(t, scheme, statefulSet)
 
@@ -438,6 +439,7 @@ func TestStatefulSetReconciliationPrimitives(t *testing.T) {
 		g.Expect(repaired.Labels).To(Equal(desired.Labels))
 		g.Expect(repaired.Spec.Replicas).NotTo(BeNil())
 		g.Expect(*repaired.Spec.Replicas).To(Equal(desiredReplicas(cluster)))
+		g.Expect(repaired.Spec.Template.Spec.Containers[0].ReadinessProbe).To(Equal(desired.Spec.Template.Spec.Containers[0].ReadinessProbe))
 		g.Expect(statefulSetPodTemplateSemanticallyEqual(scheme, repaired, desired)).To(BeTrue())
 		g.Expect(repaired.Spec.UpdateStrategy).To(Equal(desired.Spec.UpdateStrategy))
 	})

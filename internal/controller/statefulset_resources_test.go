@@ -71,6 +71,26 @@ func findVolumeMountByName(mounts []corev1.VolumeMount, name string) *corev1.Vol
 	return nil
 }
 
+func expectMysqlExecProbe(
+	t *testing.T,
+	probe *corev1.Probe,
+	command string,
+	periodSeconds int32,
+	timeoutSeconds int32,
+	failureThreshold int32,
+) {
+	t.Helper()
+	g := NewWithT(t)
+	g.Expect(probe).NotTo(BeNil())
+	g.Expect(probe.Exec).NotTo(BeNil())
+	g.Expect(probe.Exec.Command).To(Equal([]string{"/bin/sh", "-ec", command}))
+	g.Expect(probe.InitialDelaySeconds).To(Equal(int32(0)))
+	g.Expect(probe.PeriodSeconds).To(Equal(periodSeconds))
+	g.Expect(probe.TimeoutSeconds).To(Equal(timeoutSeconds))
+	g.Expect(probe.FailureThreshold).To(Equal(failureThreshold))
+	g.Expect(probe.SuccessThreshold).To(Equal(int32(1)))
+}
+
 func TestStatefulSetResourceFoundation(t *testing.T) {
 	t.Run("builds deterministic DNS-label-safe names", func(t *testing.T) {
 		g := NewWithT(t)
@@ -210,6 +230,37 @@ func TestStatefulSetResourceFoundation(t *testing.T) {
 		g.Expect(replicationPassword.ValueFrom.SecretKeyRef).NotTo(BeNil())
 		g.Expect(replicationPassword.ValueFrom.SecretKeyRef.Name).To(Equal(cluster.Spec.CredentialsSecretName))
 		g.Expect(replicationPassword.ValueFrom.SecretKeyRef.Key).To(Equal(mysqlReplicationPasswordSecretKey))
+
+		expectMysqlExecProbe(t, mysqlContainer.StartupProbe, mysqlAliveProbeCommand, 5, 2, 60)
+		expectMysqlExecProbe(t, mysqlContainer.ReadinessProbe, mysqlReadinessProbeCommand, 5, 2, 3)
+		expectMysqlExecProbe(t, mysqlContainer.LivenessProbe, mysqlAliveProbeCommand, 10, 2, 6)
+		g.Expect(mysqlContainer.StartupProbe.Exec.Command[2]).To(Equal(`MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin -uroot ping --silent`))
+		g.Expect(mysqlContainer.ReadinessProbe.Exec.Command[2]).To(Equal(`MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -Nse 'SELECT 1' >/dev/null`))
+		g.Expect(mysqlContainer.LivenessProbe.Exec.Command[2]).To(Equal(`MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin -uroot ping --silent`))
+		for _, probeCommand := range []string{
+			mysqlContainer.StartupProbe.Exec.Command[2],
+			mysqlContainer.ReadinessProbe.Exec.Command[2],
+			mysqlContainer.LivenessProbe.Exec.Command[2],
+		} {
+			g.Expect(probeCommand).To(ContainSubstring(`$MYSQL_ROOT_PASSWORD`))
+			g.Expect(probeCommand).NotTo(ContainSubstring("known-concrete-root-password"))
+			g.Expect(probeCommand).NotTo(ContainSubstring(cluster.Spec.CredentialsSecretName))
+			g.Expect(probeCommand).NotTo(ContainSubstring(mysqlRootPasswordSecretKey))
+		}
+		readinessCommand := strings.ToLower(mysqlContainer.ReadinessProbe.Exec.Command[2])
+		for _, forbiddenDependency := range []string{
+			"show slave status",
+			"slave",
+			"replica",
+			"master",
+			"replication",
+			"gtid",
+			"role",
+			"service",
+			"endpoint",
+		} {
+			g.Expect(readinessCommand).NotTo(ContainSubstring(forbiddenDependency))
+		}
 		requestedCPU := mysqlContainer.Resources.Requests[corev1.ResourceCPU]
 		requestedMemory := mysqlContainer.Resources.Requests[corev1.ResourceMemory]
 		limitedCPU := mysqlContainer.Resources.Limits[corev1.ResourceCPU]
@@ -231,6 +282,9 @@ func TestStatefulSetResourceFoundation(t *testing.T) {
 		initContainer := statefulSet.Spec.Template.Spec.InitContainers[0]
 		g.Expect(initContainer.Name).To(Equal(mysqlConfigInitName))
 		g.Expect(initContainer.Image).To(Equal(cluster.Spec.Image))
+		g.Expect(initContainer.StartupProbe).To(BeNil())
+		g.Expect(initContainer.ReadinessProbe).To(BeNil())
+		g.Expect(initContainer.LivenessProbe).To(BeNil())
 		g.Expect(initContainer.Command[:2]).To(Equal([]string{"/bin/sh", "-ec"}))
 		command := strings.Join(initContainer.Command, " ")
 		g.Expect(command).To(ContainSubstring("POD_INDEX"))
