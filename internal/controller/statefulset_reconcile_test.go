@@ -54,6 +54,8 @@ func copyStatefulSetReconcileObject(destination, source client.Object) {
 	switch destination := destination.(type) {
 	case *corev1.Service:
 		*destination = *source.(*corev1.Service).DeepCopy()
+	case *corev1.Pod:
+		*destination = *source.(*corev1.Pod).DeepCopy()
 	case *corev1.ConfigMap:
 		*destination = *source.(*corev1.ConfigMap).DeepCopy()
 	case *appsv1.StatefulSet:

@@ -89,6 +89,31 @@ var _ = Describe("MysqlCluster API admission contract", func() {
 		Expect(stored.Spec.SlaveService).To(Equal("api-valid-legacy-replica"))
 	})
 
+	It("keeps routing Service names immutable after creation", func() {
+		cluster := validMysqlClusterForAdmission("api-immutable-services")
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupMysqlClusterForAdmission(context.Background(), cluster)
+		})
+
+		stored := &databasev1.MysqlCluster{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, stored)).To(Succeed())
+		stored.Spec.MasterService = "changed-master"
+		err := k8sClient.Update(ctx, stored)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error: %v", err)
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, stored)).To(Succeed())
+		Expect(stored.Spec.MasterService).To(Equal(cluster.Spec.MasterService))
+		stored.Spec.SlaveService = "changed-replica"
+		err = k8sClient.Update(ctx, stored)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error: %v", err)
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, stored)).To(Succeed())
+		Expect(stored.Spec.SlaveService).To(Equal(cluster.Spec.SlaveService))
+	})
+
 	It("defaults replicas to three when omitted", func() {
 		cluster := validMysqlClusterForAdmission("api-default-replicas")
 		cluster.Spec.Replicas = nil

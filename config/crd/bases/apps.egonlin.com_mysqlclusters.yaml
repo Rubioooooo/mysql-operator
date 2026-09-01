@@ -57,9 +57,8 @@ spec:
                 type: string
               masterService:
                 description: |-
-                  MasterService is the legacy service name used to route traffic to the primary.
-                  It is retained for API compatibility and will be migrated to the primary-service
-                  architecture in a later phase.
+                  MasterService is the stable Service name used to route traffic to the primary.
+                  It is retained for API compatibility and is immutable after creation.
                 maxLength: 63
                 minLength: 1
                 pattern: ^[a-z]([-a-z0-9]*[a-z0-9])?$
@@ -136,9 +135,8 @@ spec:
                 type: object
               slaveService:
                 description: |-
-                  SlaveService is the legacy service name used to route traffic to replicas.
-                  It is retained for API compatibility and will be migrated to the replica-service
-                  architecture in a later phase.
+                  SlaveService is the stable Service name used to route traffic to replicas.
+                  It is retained for API compatibility and is immutable after creation.
                 maxLength: 63
                 minLength: 1
                 pattern: ^[a-z]([-a-z0-9]*[a-z0-9])?$
@@ -178,6 +176,10 @@ spec:
             x-kubernetes-validations:
             - message: masterService and slaveService must be different
               rule: self.masterService != self.slaveService
+            - message: masterService is immutable
+              rule: self.masterService == oldSelf.masterService
+            - message: slaveService is immutable
+              rule: self.slaveService == oldSelf.slaveService
           status:
             description: MysqlClusterStatus defines the observed state of MysqlCluster.
             properties:

@@ -27,6 +27,7 @@ type MysqlClusterReconciler struct {
 	Scheme             *runtime.Scheme
 	MasterGTIDSnapshot string // 用于存储主库的 GTID 快照
 	SnapGoIsEnabled    bool   // 标识用于记录GTID快照的协程序是否启动，默认值为false，只有启动后才会设置为true
+	execCommandOnPodFn func(*v1.Pod, string) (string, error)
 }
 
 /*
@@ -88,6 +89,7 @@ func (r *MysqlClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&databasev1.MysqlCluster{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&v1.Service{}).
 		Watches(
 			&v1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(r.mapMysqlStatefulSetPodToMysqlCluster),

@@ -6,85 +6,21 @@ import (
 	"os"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/api/errors" // 提供与 Kubernetes API 相关的错误处理函数
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	//"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client" // 提供与 Kubernetes API 交互的客户端
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	databasev1 "github.com/egonlin/api/v1" // 导入自定义的 MySQLCluster API 资源定义
 	v1 "k8s.io/api/core/v1"                // 核心 Kubernetes API 对象，例如 Pod 和 Service
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // 检查 Pod 健康的函数
 func isPodHealthy(pod v1.Pod) bool {
 	// 实现健康检查逻辑，例如通过 Pod 的状态、容器状态等
 	return pod.Status.Phase == v1.PodRunning && len(pod.Status.ContainerStatuses) > 0 && pod.Status.ContainerStatuses[0].Ready
-}
-
-// 获取或创建 Service 的函数
-func (r *MysqlClusterReconciler) getOrCreateService(ctx context.Context, serviceName, role, namespace string, cluster *databasev1.MysqlCluster) (*v1.Service, error) {
-	// 定义 Service 对象
-	service := &v1.Service{}
-	serviceKey := client.ObjectKey{Namespace: namespace, Name: serviceName}
-
-	// 尝试获取已经存在的 Service 对象
-	if err := r.Get(ctx, serviceKey, service); err != nil {
-		if errors.IsNotFound(err) {
-			// 如果 Service 不存在，则创建它
-			var createErr error
-			service, createErr = r.createService(serviceName, role, namespace, cluster)
-			if createErr != nil {
-				return nil, createErr
-			}
-
-			// 调用 r.Create 将上面生成的 Service 对象提交给 k8s
-			if err := r.Create(ctx, service); err != nil {
-				return nil, err
-			}
-		} else {
-			// 其他错误返回
-			return nil, err
-		}
-	} else if err := validateControlledBy(service, cluster, "Service"); err != nil {
-		return nil, err
-	}
-
-	// 返回获取到的或者新创建的 Service 对象
-	return service, nil
-}
-
-// 创建 Service 对象的辅助函数
-func (r *MysqlClusterReconciler) createService(name, role, namespace string, cluster *databasev1.MysqlCluster) (*v1.Service, error) {
-	// 定义 Service 对象
-	service := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels:    mysqlRoleLabels(cluster, role),
-		},
-		Spec: v1.ServiceSpec{
-			Selector: mysqlRoleLabels(cluster, role),
-			Ports: []v1.ServicePort{
-				{
-					Port:       3306,
-					TargetPort: intstr.FromInt(3306),
-					Protocol:   v1.ProtocolTCP,
-				},
-			},
-			Type: v1.ServiceTypeClusterIP,
-		},
-	}
-	if err := controllerutil.SetControllerReference(cluster, service, r.Scheme); err != nil {
-		return nil, fmt.Errorf("failed to set MysqlCluster %s as controller of Service %s/%s: %w", cluster.Name, namespace, name, err)
-	}
-
-	return service, nil
 }
 
 // 制作主从同步的函数
@@ -99,18 +35,18 @@ func (r *MysqlClusterReconciler) setupMasterSlaveReplication(ctx context.Context
 		return fmt.Errorf("failed to get master pod %s: %v", masterName, err)
 	}
 
-	// 打标签主库: 确保理解关联到主svc上，从库会通过主库的svc来连接进行同步
-	if err := r.labelPod(ctx, masterName, "master", cluster); err != nil {
-		return fmt.Errorf("failed to label master pod %s: %v", masterName, err)
-	}
-
 	// 为主库创建复制用户，并停止slave线程（如果之前自己是从库，那就应该停掉）
 	masterCommand := fmt.Sprintf(
 		"mysql -uroot -p%s -e \"CREATE USER IF NOT EXISTS 'replica'@'%%' IDENTIFIED BY 'password'; GRANT REPLICATION SLAVE ON *.* TO 'replica'@'%%';STOP slave;\"",
 		MySQLPassword,
 	)
-	if _, err := r.execCommandOnPod(masterPod, masterCommand); err != nil {
+	if _, err := r.executeCommandOnPod(masterPod, masterCommand); err != nil {
 		return fmt.Errorf("failed to execute command on master pod %s: %v", masterName, err)
+	}
+
+	// Publish the primary role only after the database-side transition succeeds.
+	if err := r.labelPod(ctx, masterName, "master", cluster); err != nil {
+		return fmt.Errorf("failed to label master pod %s: %v", masterName, err)
 	}
 
 	// 配置每个从库: 如果从库名数组为空，则
@@ -128,7 +64,7 @@ func (r *MysqlClusterReconciler) setupMasterSlaveReplication(ctx context.Context
 			MySQLPassword,
 			masterServiceName,
 		)
-		if _, err := r.execCommandOnPod(slavePod, slaveCommand); err != nil {
+		if _, err := r.executeCommandOnPod(slavePod, slaveCommand); err != nil {
 			return fmt.Errorf("failed to execute command on slave pod %s: %v", slaveName, err)
 		}
 
@@ -139,6 +75,13 @@ func (r *MysqlClusterReconciler) setupMasterSlaveReplication(ctx context.Context
 	}
 
 	return nil
+}
+
+func (r *MysqlClusterReconciler) executeCommandOnPod(pod *v1.Pod, command string) (string, error) {
+	if r.execCommandOnPodFn != nil {
+		return r.execCommandOnPodFn(pod, command)
+	}
+	return r.execCommandOnPod(pod, command)
 }
 
 // labelPod 为 Pod 打标签

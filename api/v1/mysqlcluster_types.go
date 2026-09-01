@@ -43,6 +43,8 @@ type ResourceRequirements struct {
 // MysqlClusterSpec defines the desired state of MysqlCluster.
 //
 // +kubebuilder:validation:XValidation:rule="self.masterService != self.slaveService",message="masterService and slaveService must be different"
+// +kubebuilder:validation:XValidation:rule="self.masterService == oldSelf.masterService",message="masterService is immutable"
+// +kubebuilder:validation:XValidation:rule="self.slaveService == oldSelf.slaveService",message="slaveService is immutable"
 type MysqlClusterSpec struct {
 	// Image is the MySQL container image.
 	// +kubebuilder:validation:MinLength=1
@@ -53,17 +55,15 @@ type MysqlClusterSpec struct {
 	// +kubebuilder:default=3
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	// MasterService is the legacy service name used to route traffic to the primary.
-	// It is retained for API compatibility and will be migrated to the primary-service
-	// architecture in a later phase.
+	// MasterService is the stable Service name used to route traffic to the primary.
+	// It is retained for API compatibility and is immutable after creation.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern="^[a-z]([-a-z0-9]*[a-z0-9])?$"
 	MasterService string `json:"masterService"`
 
-	// SlaveService is the legacy service name used to route traffic to replicas.
-	// It is retained for API compatibility and will be migrated to the replica-service
-	// architecture in a later phase.
+	// SlaveService is the stable Service name used to route traffic to replicas.
+	// It is retained for API compatibility and is immutable after creation.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern="^[a-z]([-a-z0-9]*[a-z0-9])?$"

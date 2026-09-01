@@ -11,15 +11,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func (r *MysqlClusterReconciler) ensureLegacyMysqlRoutingServices(
+func (r *MysqlClusterReconciler) ensureMysqlRoutingServices(
 	ctx context.Context,
 	cluster *databasev1.MysqlCluster,
 ) error {
-	if _, err := r.getOrCreateService(ctx, cluster.Spec.MasterService, "master", cluster.Namespace, cluster); err != nil {
-		return fmt.Errorf("failed to ensure legacy master Service for MysqlCluster %s: %w", cluster.Name, err)
+	if _, err := r.ensureMysqlRoutingService(ctx, desiredMysqlRoutingService(cluster, cluster.Spec.MasterService, "master"), cluster); err != nil {
+		return fmt.Errorf("failed to ensure primary routing Service for MysqlCluster %s: %w", cluster.Name, err)
 	}
-	if _, err := r.getOrCreateService(ctx, cluster.Spec.SlaveService, "slave", cluster.Namespace, cluster); err != nil {
-		return fmt.Errorf("failed to ensure legacy slave Service for MysqlCluster %s: %w", cluster.Name, err)
+	if _, err := r.ensureMysqlRoutingService(ctx, desiredMysqlRoutingService(cluster, cluster.Spec.SlaveService, "slave"), cluster); err != nil {
+		return fmt.Errorf("failed to ensure replica routing Service for MysqlCluster %s: %w", cluster.Name, err)
 	}
 	return nil
 }
@@ -64,7 +64,7 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetInitialization(
 	ctx context.Context,
 	cluster *databasev1.MysqlCluster,
 ) (ctrl.Result, bool, error) {
-	if err := r.ensureLegacyMysqlRoutingServices(ctx, cluster); err != nil {
+	if err := r.ensureMysqlRoutingServices(ctx, cluster); err != nil {
 		return ctrl.Result{}, false, err
 	}
 	if err := r.validateNoLegacyRawPodLifecycle(ctx, cluster); err != nil {
@@ -132,7 +132,7 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetRuntime(
 		}
 	}
 
-	if err := r.ensureLegacyMysqlRoutingServices(ctx, cluster); err != nil {
+	if err := r.ensureMysqlRoutingServices(ctx, cluster); err != nil {
 		return ctrl.Result{}, false, err
 	}
 	if _, err := r.ensureMysqlHeadlessService(ctx, cluster); err != nil {

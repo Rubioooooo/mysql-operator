@@ -106,18 +106,22 @@ var _ = Describe("MysqlCluster resource identity", func() {
 		Expect(labelsA[LabelAppInstance]).NotTo(Equal(labelsB[LabelAppInstance]))
 	})
 
-	It("sets native controller ownership on the legacy routing Service", func() {
+	It("sets native controller ownership on the primary routing Service", func() {
 		cluster := createIdentityTestCluster(ctx, "identity-owner")
 		reconciler := &MysqlClusterReconciler{Client: k8sClient, Scheme: scheme.Scheme, Log: logr.Discard()}
 
-		service, err := reconciler.getOrCreateService(ctx, cluster.Spec.MasterService, "master", cluster.Namespace, cluster)
+		service, err := reconciler.ensureMysqlRoutingService(
+			ctx,
+			desiredMysqlRoutingService(cluster, cluster.Spec.MasterService, "master"),
+			cluster,
+		)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { cleanupIdentityObject(context.Background(), service) })
 		expectMysqlClusterController(service, cluster)
 		Expect(service.Spec.Selector).To(HaveKeyWithValue(LabelAppInstance, string(cluster.UID)))
 		Expect(service.Spec.Selector).To(HaveKeyWithValue(LabelMysqlRole, "master"))
-		Expect(service.Spec.Selector).To(HaveKeyWithValue(LegacyLabelApp, "mysql"))
-		Expect(service.Spec.Selector).To(HaveKeyWithValue(LegacyLabelRole, "master"))
+		Expect(service.Spec.Selector).NotTo(HaveKey(LegacyLabelApp))
+		Expect(service.Spec.Selector).NotTo(HaveKey(LegacyLabelRole))
 	})
 
 	It("rejects a foreign Service collision without mutation", func() {
@@ -134,7 +138,11 @@ var _ = Describe("MysqlCluster resource identity", func() {
 		Expect(k8sClient.Create(ctx, foreignService)).To(Succeed())
 		DeferCleanup(func() { cleanupIdentityObject(context.Background(), foreignService) })
 
-		_, err := reconciler.getOrCreateService(ctx, foreignService.Name, "slave", cluster.Namespace, cluster)
+		_, err := reconciler.ensureMysqlRoutingService(
+			ctx,
+			desiredMysqlRoutingService(cluster, foreignService.Name, "slave"),
+			cluster,
+		)
 		Expect(err).To(MatchError(ContainSubstring("Service default/" + foreignService.Name)))
 		Expect(err).To(MatchError(ContainSubstring("MysqlCluster " + cluster.Name)))
 		storedService := &corev1.Service{}
