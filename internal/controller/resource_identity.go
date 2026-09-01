@@ -3,9 +3,11 @@ package controller
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 
 	databasev1 "github.com/egonlin/api/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -23,6 +25,8 @@ const (
 )
 
 const maxChildResourceNameLength = 253
+
+const maxDNSLabelLength = 63
 
 func boundedMysqlChildName(clusterName, suffix string) string {
 	candidate := clusterName + suffix
@@ -59,12 +63,63 @@ func mysqlConfigMapName(cluster *databasev1.MysqlCluster, ordinal int) string {
 	)
 }
 
+func boundedMysqlDNSLabelName(clusterName, suffix string) string {
+	candidate := clusterName + suffix
+	if len(candidate) <= maxDNSLabelLength && len(validation.IsDNS1123Label(candidate)) == 0 {
+		return candidate
+	}
+
+	normalizedName := strings.ReplaceAll(clusterName, ".", "-")
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(clusterName)))[:8]
+	hashPart := "-" + hash
+
+	maxPrefixLength := maxDNSLabelLength - len(hashPart) - len(suffix)
+	if maxPrefixLength < 1 {
+		panic("mysql DNS-label resource suffix exceeds Kubernetes name limit")
+	}
+
+	prefix := normalizedName
+	if len(prefix) > maxPrefixLength {
+		prefix = prefix[:maxPrefixLength]
+	}
+	prefix = strings.TrimRight(prefix, "-")
+	if prefix == "" {
+		panic("mysql DNS-label resource name has no valid prefix")
+	}
+
+	return prefix + hashPart + suffix
+}
+
+func mysqlStatefulSetName(cluster *databasev1.MysqlCluster) string {
+	return boundedMysqlDNSLabelName(cluster.Name, "-mysql")
+}
+
+func mysqlStatefulSetPodName(cluster *databasev1.MysqlCluster, ordinal int32) string {
+	return fmt.Sprintf("%s-%d", mysqlStatefulSetName(cluster), ordinal)
+}
+
+func mysqlHeadlessServiceName(cluster *databasev1.MysqlCluster) string {
+	return boundedMysqlDNSLabelName(cluster.Name, "-mysql-headless")
+}
+
+func mysqlSharedConfigMapName(cluster *databasev1.MysqlCluster) string {
+	return boundedMysqlChildName(cluster.Name, "-mysql-config")
+}
+
 func mysqlIdentityLabels(cluster *databasev1.MysqlCluster) map[string]string {
 	return map[string]string{
 		LabelAppName:     mysqlAppName,
 		LabelAppInstance: string(cluster.UID),
 		LabelManagedBy:   mysqlManagedBy,
 		LegacyLabelApp:   mysqlAppName,
+	}
+}
+
+func mysqlStatefulSetSelectorLabels(cluster *databasev1.MysqlCluster) map[string]string {
+	return map[string]string{
+		LabelAppName:     mysqlAppName,
+		LabelAppInstance: string(cluster.UID),
+		LabelManagedBy:   mysqlManagedBy,
 	}
 }
 

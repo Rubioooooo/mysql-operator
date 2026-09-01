@@ -1,8 +1,9 @@
 package controller
 
 import (
-	"context"                         // 用于处理上下文，提供超时、取消等操作
-	"github.com/go-logr/logr"         // 用于记录日志
+	"context"                 // 用于处理上下文，提供超时、取消等操作
+	"github.com/go-logr/logr" // 用于记录日志
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime" // 提供对象的通用机制，如序列化和版本转换
 
 	"sigs.k8s.io/controller-runtime/pkg/client" // 提供与 Kubernetes API 交互的客户端
@@ -11,6 +12,7 @@ import (
 	databasev1 "github.com/egonlin/api/v1" // 导入自定义的 MySQLCluster API 资源定义
 	v1 "k8s.io/api/core/v1"                // 核心 Kubernetes API 对象，例如 Pod 和 Service
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 )
 
 const (
@@ -34,6 +36,8 @@ type MysqlClusterReconciler struct {
 // +kubebuilder:rbac:groups=apps.egonlin.com,resources=mysqlclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps.egonlin.com,resources=mysqlclusters/finalizers,verbs=update
 
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+
 // +kubebuilder:rbac:groups="",resources=pods;services;configmaps,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create;get;list;watch
 // +kubebuilder:rbac:groups="",resources=endpoints,verbs=get;list;watch
@@ -53,37 +57,21 @@ func (r *MysqlClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// 检查是否已经初始化
-	if _, ok := cluster.Annotations["initialized"]; !ok {
-		// 未初始，则调用初始化函数
-		if err := r.init(ctx, &cluster); err != nil {
-			log.Info("初始化集群失败")
-			return ctrl.Result{}, err
-		} else {
-			log.Info("初始化集群成功")
-		}
-
-		// 设置 annotation 表示初始化已完成
-		if cluster.Annotations == nil {
-			cluster.Annotations = make(map[string]string)
-		}
-		cluster.Annotations["initialized"] = "true"
-		if err := r.Update(ctx, &cluster); err != nil {
-			return ctrl.Result{}, err
-		}
+	var (
+		result   ctrl.Result
+		complete bool
+		err      error
+	)
+	if _, initialized := cluster.Annotations["initialized"]; !initialized {
+		result, complete, err = r.reconcileStatefulSetInitialization(ctx, &cluster)
 	} else {
-		// 已经初始完成，则进入检测逻辑
-		// 1、副本调谐
-		result, err := r.reconcileReplicas(ctx, cluster)
-		if err != nil {
-			return result, err
-		}
-		// 2、主从检测逻辑与调谐
-		result, err = r.reconcileMasterSlave(ctx, cluster)
-		if err != nil {
-			return result, err
-		}
-
+		result, complete, err = r.reconcileStatefulSetRuntime(ctx, &cluster)
+	}
+	if err != nil {
+		return result, err
+	}
+	if !complete {
+		return result, nil
 	}
 
 	// 启用协程定期记录当前主库的GTID快照，用于选举依据
@@ -97,10 +85,13 @@ func (r *MysqlClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 // 在cmd/main.go入口main函数中会调用该函数，来对你的控制器进行设置，指定控制器管理的资源，并将控制器注册到控制器管理器中
 func (r *MysqlClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// 增加：Owns(&v1.Pod{})，确保检测pod资源
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&databasev1.MysqlCluster{}).
-		Owns(&v1.Pod{}).
+		Owns(&appsv1.StatefulSet{}).
+		Watches(
+			&v1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(r.mapMysqlStatefulSetPodToMysqlCluster),
+		).
 		Complete(r)
 }
 

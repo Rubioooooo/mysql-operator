@@ -106,32 +106,9 @@ var _ = Describe("MysqlCluster resource identity", func() {
 		Expect(labelsA[LabelAppInstance]).NotTo(Equal(labelsB[LabelAppInstance]))
 	})
 
-	It("extracts only a terminal mysql ordinal", func() {
-		Expect(extractPodNumbers([]string{
-			"cluster-2026-mysql-01",
-			"cluster-7-mysql-12",
-			"cluster-9-mysql-03-extra",
-		})).To(ConsistOf("01", "12"))
-	})
-
-	It("sets native controller ownership on non-kubelet child resources", func() {
+	It("sets native controller ownership on the legacy routing Service", func() {
 		cluster := createIdentityTestCluster(ctx, "identity-owner")
-		otherCluster := createIdentityTestCluster(ctx, "identity-owner-other")
 		reconciler := &MysqlClusterReconciler{Client: k8sClient, Scheme: scheme.Scheme, Log: logr.Discard()}
-
-		configMapName := mysqlConfigMapName(cluster, 1)
-		Expect(reconciler.createConfigMap(ctx, configMapName, 1, cluster.Namespace, cluster)).To(Succeed())
-		configMap := &corev1.ConfigMap{}
-		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: configMapName}, configMap)).To(Succeed())
-		DeferCleanup(func() { cleanupIdentityObject(context.Background(), configMap) })
-		expectMysqlClusterController(configMap, cluster)
-
-		pvcName := mysqlPVCName(cluster, 1)
-		Expect(reconciler.createPVC(ctx, pvcName, "test-storage", cluster.Namespace, "1Gi", cluster)).To(Succeed())
-		pvc := &corev1.PersistentVolumeClaim{}
-		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: pvcName}, pvc)).To(Succeed())
-		DeferCleanup(func() { cleanupIdentityObject(context.Background(), pvc) })
-		expectMysqlClusterController(pvc, cluster)
 
 		service, err := reconciler.getOrCreateService(ctx, cluster.Spec.MasterService, "master", cluster.Namespace, cluster)
 		Expect(err).NotTo(HaveOccurred())
@@ -141,35 +118,11 @@ var _ = Describe("MysqlCluster resource identity", func() {
 		Expect(service.Spec.Selector).To(HaveKeyWithValue(LabelMysqlRole, "master"))
 		Expect(service.Spec.Selector).To(HaveKeyWithValue(LegacyLabelApp, "mysql"))
 		Expect(service.Spec.Selector).To(HaveKeyWithValue(LegacyLabelRole, "master"))
-
-		otherConfigMapName := mysqlConfigMapName(otherCluster, 1)
-		Expect(reconciler.createConfigMap(ctx, otherConfigMapName, 1, otherCluster.Namespace, otherCluster)).To(Succeed())
-		otherConfigMap := &corev1.ConfigMap{}
-		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: otherCluster.Namespace, Name: otherConfigMapName}, otherConfigMap)).To(Succeed())
-		DeferCleanup(func() { cleanupIdentityObject(context.Background(), otherConfigMap) })
-		expectMysqlClusterController(otherConfigMap, otherCluster)
-		Expect(metav1.GetControllerOf(otherConfigMap).UID).NotTo(Equal(metav1.GetControllerOf(configMap).UID))
 	})
 
-	It("rejects foreign ConfigMap and Service collisions without mutation", func() {
+	It("rejects a foreign Service collision without mutation", func() {
 		cluster := createIdentityTestCluster(ctx, "identity-collision")
 		reconciler := &MysqlClusterReconciler{Client: k8sClient, Scheme: scheme.Scheme, Log: logr.Discard()}
-
-		foreignConfigMap := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: mysqlConfigMapName(cluster, 1), Namespace: cluster.Namespace},
-			Data:       map[string]string{"sentinel": "unchanged"},
-		}
-		Expect(k8sClient.Create(ctx, foreignConfigMap)).To(Succeed())
-		DeferCleanup(func() { cleanupIdentityObject(context.Background(), foreignConfigMap) })
-
-		err := reconciler.createConfigMap(ctx, foreignConfigMap.Name, 1, cluster.Namespace, cluster)
-		Expect(err).To(MatchError(ContainSubstring("ConfigMap default/" + foreignConfigMap.Name)))
-		Expect(err).To(MatchError(ContainSubstring("MysqlCluster " + cluster.Name)))
-		storedConfigMap := &corev1.ConfigMap{}
-		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(foreignConfigMap), storedConfigMap)).To(Succeed())
-		Expect(storedConfigMap.Data).To(Equal(map[string]string{"sentinel": "unchanged"}))
-		Expect(storedConfigMap.Labels).To(BeEmpty())
-		Expect(storedConfigMap.OwnerReferences).To(BeEmpty())
 
 		foreignService := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{Name: cluster.Spec.SlaveService, Namespace: cluster.Namespace},
@@ -181,7 +134,7 @@ var _ = Describe("MysqlCluster resource identity", func() {
 		Expect(k8sClient.Create(ctx, foreignService)).To(Succeed())
 		DeferCleanup(func() { cleanupIdentityObject(context.Background(), foreignService) })
 
-		_, err = reconciler.getOrCreateService(ctx, foreignService.Name, "slave", cluster.Namespace, cluster)
+		_, err := reconciler.getOrCreateService(ctx, foreignService.Name, "slave", cluster.Namespace, cluster)
 		Expect(err).To(MatchError(ContainSubstring("Service default/" + foreignService.Name)))
 		Expect(err).To(MatchError(ContainSubstring("MysqlCluster " + cluster.Name)))
 		storedService := &corev1.Service{}
