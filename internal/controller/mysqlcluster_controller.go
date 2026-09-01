@@ -1,7 +1,9 @@
 package controller
 
 import (
-	"context"                 // 用于处理上下文，提供超时、取消等操作
+	"context" // 用于处理上下文，提供超时、取消等操作
+	"fmt"
+
 	"github.com/go-logr/logr" // 用于记录日志
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime" // 提供对象的通用机制，如序列化和版本转换
@@ -15,6 +17,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 )
 
+const mysqlClusterInitializedAnnotation = "initialized"
+
 // MysqlClusterReconciler reconciles a MysqlCluster object
 type MysqlClusterReconciler struct {
 	client.Client                  // 嵌入 client.Client 接口，用于与 Kubernetes API 交互
@@ -23,6 +27,24 @@ type MysqlClusterReconciler struct {
 	MasterGTIDSnapshot string // 用于存储主库的 GTID 快照
 	SnapGoIsEnabled    bool   // 标识用于记录GTID快照的协程序是否启动，默认值为false，只有启动后才会设置为true
 	execCommandOnPodFn func(*v1.Pod, string) (string, error)
+}
+
+func mysqlClusterIsInitialized(cluster *databasev1.MysqlCluster) (bool, error) {
+	value, exists := cluster.GetAnnotations()[mysqlClusterInitializedAnnotation]
+	switch {
+	case !exists:
+		return false, nil
+	case value == "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf(
+			"MysqlCluster %s/%s has invalid %s annotation value %q",
+			cluster.Namespace,
+			cluster.Name,
+			mysqlClusterInitializedAnnotation,
+			value,
+		)
+	}
 }
 
 /*
@@ -52,13 +74,17 @@ func (r *MysqlClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.Get(ctx, req.NamespacedName, &cluster); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	initialized, lifecycleErr := mysqlClusterIsInitialized(&cluster)
+	if lifecycleErr != nil {
+		return ctrl.Result{}, lifecycleErr
+	}
 
 	var (
 		result   ctrl.Result
 		complete bool
 		err      error
 	)
-	if _, initialized := cluster.Annotations["initialized"]; !initialized {
+	if !initialized {
 		result, complete, err = r.reconcileStatefulSetInitialization(ctx, &cluster)
 	} else {
 		result, complete, err = r.reconcileStatefulSetRuntime(ctx, &cluster)

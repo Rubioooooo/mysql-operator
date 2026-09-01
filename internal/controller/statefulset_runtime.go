@@ -45,7 +45,7 @@ func (r *MysqlClusterReconciler) markMysqlClusterInitialized(
 	ctx context.Context,
 	cluster *databasev1.MysqlCluster,
 ) error {
-	if cluster.Annotations["initialized"] == "true" {
+	if cluster.Annotations[mysqlClusterInitializedAnnotation] == "true" {
 		return nil
 	}
 
@@ -53,7 +53,7 @@ func (r *MysqlClusterReconciler) markMysqlClusterInitialized(
 	if cluster.Annotations == nil {
 		cluster.Annotations = make(map[string]string)
 	}
-	cluster.Annotations["initialized"] = "true"
+	cluster.Annotations[mysqlClusterInitializedAnnotation] = "true"
 	if err := r.Patch(ctx, cluster, client.MergeFrom(base)); err != nil {
 		return fmt.Errorf("failed to mark MysqlCluster %s initialized: %w", cluster.Name, err)
 	}
