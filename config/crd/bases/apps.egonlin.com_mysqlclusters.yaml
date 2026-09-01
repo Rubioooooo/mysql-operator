@@ -51,6 +51,14 @@ spec:
           spec:
             description: MysqlClusterSpec defines the desired state of MysqlCluster.
             properties:
+              credentialsSecretName:
+                description: |-
+                  CredentialsSecretName is the name of an external immutable Secret in the
+                  MysqlCluster namespace containing root-password and replication-password.
+                maxLength: 253
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                type: string
               image:
                 description: Image is the MySQL container image.
                 minLength: 1
@@ -167,6 +175,7 @@ spec:
                 - storageClassName
                 type: object
             required:
+            - credentialsSecretName
             - image
             - masterService
             - resources
@@ -180,6 +189,8 @@ spec:
               rule: self.masterService == oldSelf.masterService
             - message: slaveService is immutable
               rule: self.slaveService == oldSelf.slaveService
+            - message: credentialsSecretName is immutable
+              rule: self.credentialsSecretName == oldSelf.credentialsSecretName
           status:
             description: MysqlClusterStatus defines the observed state of MysqlCluster.
             properties:
@@ -257,6 +268,11 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              credentialsSecretUID:
+                description: |-
+                  CredentialsSecretUID is the UID of the immutable external credential
+                  Secret accepted for this MysqlCluster lifecycle.
+                type: string
               currentReplicas:
                 description: CurrentReplicas is the number of MySQL members currently
                   observed.
@@ -297,6 +313,11 @@ spec:
                   type: string
                 type: array
             type: object
+            x-kubernetes-validations:
+            - message: credentialsSecretUID is write-once and cannot be changed or
+                cleared
+              rule: '!has(oldSelf.credentialsSecretUID) || (has(self.credentialsSecretUID)
+                && self.credentialsSecretUID == oldSelf.credentialsSecretUID)'
         type: object
     served: true
     storage: true

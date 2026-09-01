@@ -30,10 +30,11 @@ func validMysqlClusterForAdmission(name string) *databasev1.MysqlCluster {
 			Namespace: "default",
 		},
 		Spec: databasev1.MysqlClusterSpec{
-			Image:         "example.com/mysql:5.7",
-			Replicas:      int32PtrForTest(3),
-			MasterService: name + "-master",
-			SlaveService:  name + "-replica",
+			Image:                 "example.com/mysql:5.7",
+			Replicas:              int32PtrForTest(3),
+			MasterService:         name + "-master",
+			SlaveService:          name + "-replica",
+			CredentialsSecretName: name + "-credentials",
 			Storage: databasev1.StorageConfig{
 				StorageClassName: "test-storage",
 				Size:             mustQuantityForTest("1Gi"),
@@ -87,6 +88,40 @@ var _ = Describe("MysqlCluster API admission contract", func() {
 		Expect(*stored.Spec.Replicas).To(Equal(int32(3)))
 		Expect(stored.Spec.MasterService).To(Equal("api-valid-legacy-master"))
 		Expect(stored.Spec.SlaveService).To(Equal("api-valid-legacy-replica"))
+		Expect(stored.Spec.CredentialsSecretName).To(Equal("api-valid-legacy-credentials"))
+	})
+
+	It("requires a credential Secret name", func() {
+		cluster := validMysqlClusterForAdmission("api-missing-credentials")
+		cluster.Spec.CredentialsSecretName = ""
+
+		err := k8sClient.Create(ctx, cluster)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error: %v", err)
+	})
+
+	It("rejects an invalid credential Secret name", func() {
+		cluster := validMysqlClusterForAdmission("api-invalid-credentials")
+		cluster.Spec.CredentialsSecretName = "Invalid_Secret"
+
+		err := k8sClient.Create(ctx, cluster)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error: %v", err)
+	})
+
+	It("keeps the credential Secret name immutable after creation", func() {
+		cluster := validMysqlClusterForAdmission("api-immutable-credentials")
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupMysqlClusterForAdmission(context.Background(), cluster)
+		})
+
+		stored := &databasev1.MysqlCluster{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, stored)).To(Succeed())
+		stored.Spec.CredentialsSecretName = "changed-credentials"
+		err := k8sClient.Update(ctx, stored)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error: %v", err)
 	})
 
 	It("keeps routing Service names immutable after creation", func() {
@@ -229,10 +264,11 @@ var _ = Describe("MysqlCluster API admission contract", func() {
 					"namespace": "default",
 				},
 				"spec": map[string]interface{}{
-					"image":         "example.com/mysql:5.7",
-					"replicas":      int64(3),
-					"masterService": "api-malformed-master",
-					"slaveService":  "api-malformed-replica",
+					"image":                 "example.com/mysql:5.7",
+					"replicas":              int64(3),
+					"masterService":         "api-malformed-master",
+					"slaveService":          "api-malformed-replica",
+					"credentialsSecretName": "api-malformed-credentials",
 					"storage": map[string]interface{}{
 						"storageClassName": "test-storage",
 						"size":             "1Gi",

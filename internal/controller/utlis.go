@@ -23,6 +23,35 @@ func isPodHealthy(pod v1.Pod) bool {
 	return pod.Status.Phase == v1.PodRunning && len(pod.Status.ContainerStatuses) > 0 && pod.Status.ContainerStatuses[0].Ready
 }
 
+const (
+	mysqlRootClientCommand                = `MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot`
+	mysqlReplicationPasswordSQLAssignment = `replication_password_sql=$(printf '%s' "$MYSQL_REPLICATION_PASSWORD" | sed "s/\\\\/\\\\\\\\/g; s/'/''/g")`
+)
+
+func mysqlPreparePrimaryCommand() string {
+	return mysqlReplicationPasswordSQLAssignment + `; ` + mysqlRootClientCommand +
+		` -e "CREATE USER IF NOT EXISTS 'replica'@'%' IDENTIFIED BY '${replication_password_sql}'; GRANT REPLICATION SLAVE ON *.* TO 'replica'@'%';STOP slave;"`
+}
+
+func mysqlConfigureReplicaCommand(masterServiceName string) string {
+	return mysqlReplicationPasswordSQLAssignment + `; ` + mysqlRootClientCommand + fmt.Sprintf(
+		` -e "STOP SLAVE;CHANGE MASTER TO MASTER_HOST='%s', MASTER_USER='replica', MASTER_PASSWORD='${replication_password_sql}', MASTER_AUTO_POSITION=1; START SLAVE;"`,
+		masterServiceName,
+	)
+}
+
+func mysqlShowSlaveStatusCommand() string {
+	return mysqlRootClientCommand + ` -e "SHOW SLAVE STATUS \G"`
+}
+
+func mysqlShowMasterGTIDCommand() string {
+	return mysqlRootClientCommand + ` -e "SHOW MASTER STATUS\G" | grep 'Executed_Gtid_Set:' | awk '{print $2}'`
+}
+
+func mysqlShowSlaveGTIDCommand() string {
+	return mysqlRootClientCommand + ` -e "SHOW SLAVE STATUS\G" | grep 'Retrieved_Gtid_Set:' | awk '{print $2}'`
+}
+
 // 制作主从同步的函数
 func (r *MysqlClusterReconciler) setupMasterSlaveReplication(ctx context.Context, masterName string, slaveNames []string, cluster databasev1.MysqlCluster) error {
 	log := log.FromContext(ctx)
@@ -36,10 +65,7 @@ func (r *MysqlClusterReconciler) setupMasterSlaveReplication(ctx context.Context
 	}
 
 	// 为主库创建复制用户，并停止slave线程（如果之前自己是从库，那就应该停掉）
-	masterCommand := fmt.Sprintf(
-		"mysql -uroot -p%s -e \"CREATE USER IF NOT EXISTS 'replica'@'%%' IDENTIFIED BY 'password'; GRANT REPLICATION SLAVE ON *.* TO 'replica'@'%%';STOP slave;\"",
-		MySQLPassword,
-	)
+	masterCommand := mysqlPreparePrimaryCommand()
 	if _, err := r.executeCommandOnPod(masterPod, masterCommand); err != nil {
 		return fmt.Errorf("failed to execute command on master pod %s: %v", masterName, err)
 	}
@@ -58,12 +84,7 @@ func (r *MysqlClusterReconciler) setupMasterSlaveReplication(ctx context.Context
 		}
 
 		// 配置主从复制: 先停slave，再配置、然后再启slave
-		masterServiceName := cluster.Spec.MasterService
-		slaveCommand := fmt.Sprintf(
-			"mysql -uroot -p%s -e \"STOP SLAVE;CHANGE MASTER TO MASTER_HOST='%s', MASTER_USER='replica', MASTER_PASSWORD='password', MASTER_AUTO_POSITION=1; START SLAVE;\"",
-			MySQLPassword,
-			masterServiceName,
-		)
+		slaveCommand := mysqlConfigureReplicaCommand(cluster.Spec.MasterService)
 		if _, err := r.executeCommandOnPod(slavePod, slaveCommand); err != nil {
 			return fmt.Errorf("failed to execute command on slave pod %s: %v", slaveName, err)
 		}

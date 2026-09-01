@@ -40,6 +40,19 @@ func createStatefulSetEnvtestCluster(
 	cluster := validMysqlClusterForAdmission(clusterName)
 	cluster.Namespace = namespaceName
 	Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+	immutable := true
+	credentials := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: cluster.Spec.CredentialsSecretName, Namespace: namespaceName},
+		Immutable:  &immutable,
+		Data: map[string][]byte{
+			mysqlRootPasswordSecretKey:        []byte("envtest-root-password"),
+			mysqlReplicationPasswordSecretKey: []byte("envtest-replication-password"),
+		},
+	}
+	Expect(k8sClient.Create(ctx, credentials)).To(Succeed())
+	DeferCleanup(func() {
+		cleanupStatefulSetEnvtestObject(context.Background(), credentials)
+	})
 
 	stored := &databasev1.MysqlCluster{}
 	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cluster), stored)).To(Succeed())

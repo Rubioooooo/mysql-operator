@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -85,5 +86,37 @@ var _ = Describe("MysqlCluster status subresource contract", func() {
 		By("confirming the normal update did not overwrite the status subresource")
 		Expect(final.Status.Phase).To(Equal(databasev1.MysqlClusterPhaseRunning))
 		Expect(final.Status.Primary).To(Equal("mysql-01"))
+	})
+
+	It("enforces credentialsSecretUID as write-once through status admission", func() {
+		cluster := validMysqlClusterForAdmission("status-credential-uid")
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupMysqlClusterForAdmission(context.Background(), cluster)
+		})
+
+		key := types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}
+		stored := &databasev1.MysqlCluster{}
+		Expect(k8sClient.Get(ctx, key, stored)).To(Succeed())
+		stored.Status.CredentialsSecretUID = "credential-secret-uid-a"
+		Expect(k8sClient.Status().Update(ctx, stored)).To(Succeed())
+
+		different := &databasev1.MysqlCluster{}
+		Expect(k8sClient.Get(ctx, key, different)).To(Succeed())
+		different.Status.CredentialsSecretUID = "credential-secret-uid-b"
+		err := k8sClient.Status().Update(ctx, different)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error: %v", err)
+
+		cleared := &databasev1.MysqlCluster{}
+		Expect(k8sClient.Get(ctx, key, cleared)).To(Succeed())
+		cleared.Status.CredentialsSecretUID = ""
+		err = k8sClient.Status().Update(ctx, cleared)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error: %v", err)
+
+		final := &databasev1.MysqlCluster{}
+		Expect(k8sClient.Get(ctx, key, final)).To(Succeed())
+		Expect(final.Status.CredentialsSecretUID).To(Equal("credential-secret-uid-a"))
 	})
 })

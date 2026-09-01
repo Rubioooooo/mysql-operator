@@ -66,10 +66,11 @@ var _ = Describe("MysqlCluster envtest API boundary", func() {
 				Namespace: resourceNamespace,
 			},
 			Spec: appsv1.MysqlClusterSpec{
-				Image:         "example.com/mysql:5.7",
-				Replicas:      &replicas,
-				MasterService: "test-master",
-				SlaveService:  "test-replica",
+				Image:                 "example.com/mysql:5.7",
+				Replicas:              &replicas,
+				MasterService:         "test-master",
+				SlaveService:          "test-replica",
+				CredentialsSecretName: "test-credentials",
 				Storage: appsv1.StorageConfig{
 					StorageClassName: "test-storage",
 					Size:             mustQuantityForTest("1Gi"),
@@ -100,6 +101,7 @@ var _ = Describe("MysqlCluster envtest API boundary", func() {
 		Expect(*stored.Spec.Replicas).To(Equal(int32(3)))
 		Expect(stored.Spec.MasterService).To(Equal("test-master"))
 		Expect(stored.Spec.SlaveService).To(Equal("test-replica"))
+		Expect(stored.Spec.CredentialsSecretName).To(Equal("test-credentials"))
 		Expect(stored.Spec.Storage.StorageClassName).To(Equal("test-storage"))
 		Expect(stored.Spec.Storage.Size.Cmp(mustQuantityForTest("1Gi"))).To(Equal(0))
 

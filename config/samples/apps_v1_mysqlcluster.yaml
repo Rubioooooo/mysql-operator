@@ -11,6 +11,9 @@ spec:
   replicas: 3
   masterService: master-service
   slaveService: slave-service
+  # Must reference a separately managed immutable Secret in this namespace
+  # containing root-password and replication-password.
+  credentialsSecretName: mysqlcluster-sample-credentials
   storage:
     storageClassName: "local-path"
     size: 1Gi

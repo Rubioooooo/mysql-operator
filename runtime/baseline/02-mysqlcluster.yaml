@@ -10,6 +10,8 @@ spec:
 
   masterService: mysql-baseline-master
   slaveService: mysql-baseline-slave
+  # External immutable Secret; it must provide root-password and replication-password.
+  credentialsSecretName: mysql-baseline-credentials
 
   storage:
     storageClassName: local-storage

@@ -143,7 +143,24 @@ func desiredMysqlStatefulSet(cluster *databasev1.MysqlCluster) *appsv1.StatefulS
 								},
 							},
 							Env: []corev1.EnvVar{
-								{Name: "MYSQL_ROOT_PASSWORD", Value: "password"},
+								{
+									Name: "MYSQL_ROOT_PASSWORD",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Spec.CredentialsSecretName},
+											Key:                  mysqlRootPasswordSecretKey,
+										},
+									},
+								},
+								{
+									Name: "MYSQL_REPLICATION_PASSWORD",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Spec.CredentialsSecretName},
+											Key:                  mysqlReplicationPasswordSecretKey,
+										},
+									},
+								},
 							},
 							Ports: []corev1.ContainerPort{
 								{Name: "mysql", ContainerPort: 3306, Protocol: corev1.ProtocolTCP},

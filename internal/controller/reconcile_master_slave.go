@@ -112,10 +112,7 @@ func (r *MysqlClusterReconciler) checkReplicaStatus(ctx context.Context, cluster
 	}
 
 	// 准备 SQL 查询命令
-	sqlQuery := fmt.Sprintf(
-		"mysql -uroot -p%s -e \"SHOW SLAVE STATUS \\G\"",
-		MySQLPassword,
-	)
+	sqlQuery := mysqlShowSlaveStatusCommand()
 
 	var failedReplicas []string
 	for _, replicaPodName := range replicaPodNames {
@@ -126,7 +123,7 @@ func (r *MysqlClusterReconciler) checkReplicaStatus(ctx context.Context, cluster
 		}
 
 		// 执行 SQL 查询
-		output, err := r.execCommandOnPod(pod, sqlQuery)
+		output, err := r.executeCommandOnPod(pod, sqlQuery)
 		if err != nil {
 			return "", nil, fmt.Errorf("failed to execute command on pod %s: %v", replicaPodName, err)
 		}

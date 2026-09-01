@@ -23,8 +23,9 @@ func statefulSetResourceTestCluster(name string, uid types.UID) *databasev1.Mysq
 			UID:       uid,
 		},
 		Spec: databasev1.MysqlClusterSpec{
-			Image:    "example.com/mysql:5.7",
-			Replicas: &replicas,
+			Image:                 "example.com/mysql:5.7",
+			Replicas:              &replicas,
+			CredentialsSecretName: name + "-credentials",
 			Storage: databasev1.StorageConfig{
 				StorageClassName: "fast-storage",
 				Size:             resource.MustParse("10Gi"),
@@ -47,6 +48,15 @@ func findContainerByName(containers []corev1.Container, name string) *corev1.Con
 	for i := range containers {
 		if containers[i].Name == name {
 			return &containers[i]
+		}
+	}
+	return nil
+}
+
+func findEnvVarByName(env []corev1.EnvVar, name string) *corev1.EnvVar {
+	for i := range env {
+		if env[i].Name == name {
+			return &env[i]
 		}
 	}
 	return nil
@@ -128,6 +138,10 @@ func TestStatefulSetResourceFoundation(t *testing.T) {
 		g.Expect(configMap.OwnerReferences).To(BeEmpty())
 
 		config := configMap.Data["my.cnf"]
+		g.Expect(configMap.Data).NotTo(HaveKey(mysqlRootPasswordSecretKey))
+		g.Expect(configMap.Data).NotTo(HaveKey(mysqlReplicationPasswordSecretKey))
+		g.Expect(config).NotTo(ContainSubstring("MYSQL_ROOT_PASSWORD"))
+		g.Expect(config).NotTo(ContainSubstring("MYSQL_REPLICATION_PASSWORD"))
 		g.Expect(config).To(ContainSubstring("[mysqld]"))
 		g.Expect(config).To(ContainSubstring("binlog_format=row"))
 		g.Expect(config).To(ContainSubstring("log-bin=mysql-bin"))
@@ -182,7 +196,20 @@ func TestStatefulSetResourceFoundation(t *testing.T) {
 		g.Expect(mysqlContainer).NotTo(BeNil())
 		g.Expect(mysqlContainer.Image).To(Equal(cluster.Spec.Image))
 		g.Expect(mysqlContainer.Ports).To(ContainElement(corev1.ContainerPort{Name: "mysql", ContainerPort: 3306, Protocol: corev1.ProtocolTCP}))
-		g.Expect(mysqlContainer.Env).To(ContainElement(corev1.EnvVar{Name: "MYSQL_ROOT_PASSWORD", Value: "password"}))
+		rootPassword := findEnvVarByName(mysqlContainer.Env, "MYSQL_ROOT_PASSWORD")
+		g.Expect(rootPassword).NotTo(BeNil())
+		g.Expect(rootPassword.Value).To(BeEmpty())
+		g.Expect(rootPassword.ValueFrom).NotTo(BeNil())
+		g.Expect(rootPassword.ValueFrom.SecretKeyRef).NotTo(BeNil())
+		g.Expect(rootPassword.ValueFrom.SecretKeyRef.Name).To(Equal(cluster.Spec.CredentialsSecretName))
+		g.Expect(rootPassword.ValueFrom.SecretKeyRef.Key).To(Equal(mysqlRootPasswordSecretKey))
+		replicationPassword := findEnvVarByName(mysqlContainer.Env, "MYSQL_REPLICATION_PASSWORD")
+		g.Expect(replicationPassword).NotTo(BeNil())
+		g.Expect(replicationPassword.Value).To(BeEmpty())
+		g.Expect(replicationPassword.ValueFrom).NotTo(BeNil())
+		g.Expect(replicationPassword.ValueFrom.SecretKeyRef).NotTo(BeNil())
+		g.Expect(replicationPassword.ValueFrom.SecretKeyRef.Name).To(Equal(cluster.Spec.CredentialsSecretName))
+		g.Expect(replicationPassword.ValueFrom.SecretKeyRef.Key).To(Equal(mysqlReplicationPasswordSecretKey))
 		requestedCPU := mysqlContainer.Resources.Requests[corev1.ResourceCPU]
 		requestedMemory := mysqlContainer.Resources.Requests[corev1.ResourceMemory]
 		limitedCPU := mysqlContainer.Resources.Limits[corev1.ResourceCPU]

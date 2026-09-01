@@ -15,11 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 )
 
-const (
-	MySQLPassword = "password" // Hardcoded MySQL password
-	//KubeConfigPath         = "/root/.kube/config" // Hardcoded kubeconfig path
-)
-
 // MysqlClusterReconciler reconciles a MysqlCluster object
 type MysqlClusterReconciler struct {
 	client.Client                  // 嵌入 client.Client 接口，用于与 Kubernetes API 交互
@@ -42,7 +37,7 @@ type MysqlClusterReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods;services;configmaps,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create;get;list;watch
 // +kubebuilder:rbac:groups="",resources=endpoints,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;delete
@@ -90,6 +85,11 @@ func (r *MysqlClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&databasev1.MysqlCluster{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&v1.Service{}).
+		Owns(&v1.ConfigMap{}).
+		Watches(
+			&v1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.mapCredentialSecretToMysqlClusters),
+		).
 		Watches(
 			&v1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(r.mapMysqlStatefulSetPodToMysqlCluster),

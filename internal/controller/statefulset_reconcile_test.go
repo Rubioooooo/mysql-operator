@@ -15,6 +15,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -26,8 +27,10 @@ import (
 
 type statefulSetReconcileMemoryClient struct {
 	client.Client
-	objects     map[string]client.Object
-	updateCount int
+	objects          map[string]client.Object
+	updateCount      int
+	statusPatchCount int
+	statusPatchError error
 }
 
 func newStatefulSetReconcileMemoryClient(objects ...client.Object) *statefulSetReconcileMemoryClient {
@@ -56,13 +59,53 @@ func copyStatefulSetReconcileObject(destination, source client.Object) {
 		*destination = *source.(*corev1.Service).DeepCopy()
 	case *corev1.Pod:
 		*destination = *source.(*corev1.Pod).DeepCopy()
+	case *corev1.Secret:
+		*destination = *source.(*corev1.Secret).DeepCopy()
 	case *corev1.ConfigMap:
 		*destination = *source.(*corev1.ConfigMap).DeepCopy()
 	case *appsv1.StatefulSet:
 		*destination = *source.(*appsv1.StatefulSet).DeepCopy()
+	case *databasev1.MysqlCluster:
+		*destination = *source.(*databasev1.MysqlCluster).DeepCopy()
 	default:
 		panic(fmt.Sprintf("unsupported memory client object type %T", destination))
 	}
+}
+
+func (c *statefulSetReconcileMemoryClient) List(
+	_ context.Context,
+	list client.ObjectList,
+	options ...client.ListOption,
+) error {
+	listOptions := &client.ListOptions{}
+	for _, option := range options {
+		option.ApplyToList(listOptions)
+	}
+
+	switch typedList := list.(type) {
+	case *corev1.PodList:
+		for _, object := range c.objects {
+			pod, ok := object.(*corev1.Pod)
+			if !ok || listOptions.Namespace != "" && pod.Namespace != listOptions.Namespace {
+				continue
+			}
+			if listOptions.LabelSelector != nil && !listOptions.LabelSelector.Matches(labels.Set(pod.Labels)) {
+				continue
+			}
+			typedList.Items = append(typedList.Items, *pod.DeepCopy())
+		}
+	case *databasev1.MysqlClusterList:
+		for _, object := range c.objects {
+			cluster, ok := object.(*databasev1.MysqlCluster)
+			if !ok || listOptions.Namespace != "" && cluster.Namespace != listOptions.Namespace {
+				continue
+			}
+			typedList.Items = append(typedList.Items, *cluster.DeepCopy())
+		}
+	default:
+		return fmt.Errorf("unsupported reconcile memory list type %T", list)
+	}
+	return nil
 }
 
 func (c *statefulSetReconcileMemoryClient) Get(
@@ -108,6 +151,65 @@ func (c *statefulSetReconcileMemoryClient) Update(
 	object.SetResourceVersion(strconv.Itoa(resourceVersion + 1))
 	c.objects[key] = object.DeepCopyObject().(client.Object)
 	c.updateCount++
+	return nil
+}
+
+type statefulSetReconcileStatusWriter struct {
+	client *statefulSetReconcileMemoryClient
+}
+
+func (c *statefulSetReconcileMemoryClient) Status() client.SubResourceWriter {
+	return &statefulSetReconcileStatusWriter{client: c}
+}
+
+func (w *statefulSetReconcileStatusWriter) Create(
+	_ context.Context,
+	_ client.Object,
+	_ client.Object,
+	_ ...client.SubResourceCreateOption,
+) error {
+	return fmt.Errorf("status create is unsupported by reconcile memory client")
+}
+
+func (w *statefulSetReconcileStatusWriter) Update(
+	_ context.Context,
+	object client.Object,
+	_ ...client.SubResourceUpdateOption,
+) error {
+	return w.writeMysqlClusterStatus(object, false)
+}
+
+func (w *statefulSetReconcileStatusWriter) Patch(
+	_ context.Context,
+	object client.Object,
+	_ client.Patch,
+	_ ...client.SubResourcePatchOption,
+) error {
+	return w.writeMysqlClusterStatus(object, true)
+}
+
+func (w *statefulSetReconcileStatusWriter) writeMysqlClusterStatus(object client.Object, patch bool) error {
+	if w.client.statusPatchError != nil {
+		return w.client.statusPatchError
+	}
+	cluster, ok := object.(*databasev1.MysqlCluster)
+	if !ok {
+		return fmt.Errorf("unsupported reconcile memory status object %T", object)
+	}
+	key := w.client.objectKey(cluster)
+	storedObject, found := w.client.objects[key]
+	if !found {
+		return apierrors.NewNotFound(schema.GroupResource{Resource: "MysqlCluster"}, cluster.Name)
+	}
+	stored := storedObject.(*databasev1.MysqlCluster).DeepCopy()
+	stored.Status = cluster.Status
+	resourceVersion, _ := strconv.Atoi(stored.ResourceVersion)
+	stored.ResourceVersion = strconv.Itoa(resourceVersion + 1)
+	cluster.ResourceVersion = stored.ResourceVersion
+	w.client.objects[key] = stored
+	if patch {
+		w.client.statusPatchCount++
+	}
 	return nil
 }
 

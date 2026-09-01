@@ -98,9 +98,7 @@ func (r *MysqlClusterReconciler) getDataScore(ctx context.Context, pod *v1.Pod) 
 
 // 获取主库的 GTID 集合
 func (r *MysqlClusterReconciler) getMasterGTIDSet(pod *v1.Pod) (string, error) {
-	masterCommand := "mysql -uroot -p%s -e \"SHOW MASTER STATUS\\G\" | grep 'Executed_Gtid_Set:' | awk '{print $2}'"
-	command := fmt.Sprintf(masterCommand, MySQLPassword)
-	gitSet, err := r.execCommandOnPod(pod, command)
+	gitSet, err := r.executeCommandOnPod(pod, mysqlShowMasterGTIDCommand())
 	if err != nil {
 		return "", err
 	}
@@ -109,9 +107,7 @@ func (r *MysqlClusterReconciler) getMasterGTIDSet(pod *v1.Pod) (string, error) {
 
 // 获取从库的 GTID 集合
 func (r *MysqlClusterReconciler) getSlaveGTIDSet(pod *v1.Pod) (string, error) {
-	slaveCommand := "mysql -uroot -p%s -e \"SHOW SLAVE STATUS\\G\" | grep 'Retrieved_Gtid_Set:' | awk '{print $2}'"
-	command := fmt.Sprintf(slaveCommand, MySQLPassword)
-	gitSet, err := r.execCommandOnPod(pod, command)
+	gitSet, err := r.executeCommandOnPod(pod, mysqlShowSlaveGTIDCommand())
 	if err != nil {
 		return "", err
 	}

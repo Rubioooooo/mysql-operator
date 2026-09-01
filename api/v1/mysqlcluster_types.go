@@ -45,6 +45,7 @@ type ResourceRequirements struct {
 // +kubebuilder:validation:XValidation:rule="self.masterService != self.slaveService",message="masterService and slaveService must be different"
 // +kubebuilder:validation:XValidation:rule="self.masterService == oldSelf.masterService",message="masterService is immutable"
 // +kubebuilder:validation:XValidation:rule="self.slaveService == oldSelf.slaveService",message="slaveService is immutable"
+// +kubebuilder:validation:XValidation:rule="self.credentialsSecretName == oldSelf.credentialsSecretName",message="credentialsSecretName is immutable"
 type MysqlClusterSpec struct {
 	// Image is the MySQL container image.
 	// +kubebuilder:validation:MinLength=1
@@ -69,6 +70,13 @@ type MysqlClusterSpec struct {
 	// +kubebuilder:validation:Pattern="^[a-z]([-a-z0-9]*[a-z0-9])?$"
 	SlaveService string `json:"slaveService"`
 
+	// CredentialsSecretName is the name of an external immutable Secret in the
+	// MysqlCluster namespace containing root-password and replication-password.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern="^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+	CredentialsSecretName string `json:"credentialsSecretName"`
+
 	Storage   StorageConfig        `json:"storage"`
 	Resources ResourceRequirements `json:"resources"`
 }
@@ -85,6 +93,8 @@ const (
 )
 
 // MysqlClusterStatus defines the observed state of MysqlCluster.
+//
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.credentialsSecretUID) || (has(self.credentialsSecretUID) && self.credentialsSecretUID == oldSelf.credentialsSecretUID)",message="credentialsSecretUID is write-once and cannot be changed or cleared"
 type MysqlClusterStatus struct {
 	// ObservedGeneration is the most recent generation observed by the controller.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -101,6 +111,10 @@ type MysqlClusterStatus struct {
 
 	// ReadyReplicas is the number of MySQL members currently ready.
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// CredentialsSecretUID is the UID of the immutable external credential
+	// Secret accepted for this MysqlCluster lifecycle.
+	CredentialsSecretUID string `json:"credentialsSecretUID,omitempty"`
 
 	// Conditions describe the current reconciliation and availability state.
 	// +listType=map

@@ -64,10 +64,13 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetInitialization(
 	ctx context.Context,
 	cluster *databasev1.MysqlCluster,
 ) (ctrl.Result, bool, error) {
-	if err := r.ensureMysqlRoutingServices(ctx, cluster); err != nil {
+	if err := r.validateNoLegacyRawPodLifecycle(ctx, cluster); err != nil {
 		return ctrl.Result{}, false, err
 	}
-	if err := r.validateNoLegacyRawPodLifecycle(ctx, cluster); err != nil {
+	if err := r.ensureMysqlCredentials(ctx, cluster); err != nil {
+		return ctrl.Result{}, false, err
+	}
+	if err := r.ensureMysqlRoutingServices(ctx, cluster); err != nil {
 		return ctrl.Result{}, false, err
 	}
 	if _, err := r.ensureMysqlHeadlessService(ctx, cluster); err != nil {
@@ -105,6 +108,9 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetRuntime(
 	cluster *databasev1.MysqlCluster,
 ) (ctrl.Result, bool, error) {
 	if err := r.validateNoLegacyRawPodLifecycle(ctx, cluster); err != nil {
+		return ctrl.Result{}, false, err
+	}
+	if err := r.ensureMysqlCredentials(ctx, cluster); err != nil {
 		return ctrl.Result{}, false, err
 	}
 
