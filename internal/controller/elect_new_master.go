@@ -30,8 +30,13 @@ func (r *MysqlClusterReconciler) electNewMaster(ctx context.Context, cluster dat
 
 	// 遍历所有从库 Pod
 	for _, pod := range slavePods.Items {
-		// 确保 Pod 健康
-		if !isPodHealthy(pod) {
+		if err := r.validateStatefulSetManagedMysqlPod(ctx, &pod, &cluster); err != nil {
+			return "", nil, fmt.Errorf("invalid election candidate Pod %s/%s: %w", pod.Namespace, pod.Name, err)
+		}
+
+		// Only a ready MySQL container may be promoted. Other containers do not
+		// establish database readiness.
+		if !mysqlStatefulSetPodHealthy(&pod) {
 			continue
 		}
 
@@ -102,7 +107,7 @@ func (r *MysqlClusterReconciler) getMasterGTIDSet(pod *v1.Pod) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return gitSet, nil
+	return strings.TrimSpace(gitSet), nil
 }
 
 // 获取从库的 GTID 集合
@@ -111,7 +116,7 @@ func (r *MysqlClusterReconciler) getSlaveGTIDSet(pod *v1.Pod) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return gitSet, nil
+	return strings.TrimSpace(gitSet), nil
 }
 
 // 计算 GTID 完整度得分
@@ -149,7 +154,7 @@ func (r *MysqlClusterReconciler) getDataSize(ctx context.Context, pod *v1.Pod) (
 
 	// 使用 du 命令计算数据目录的大小
 	dataSizeCommand := fmt.Sprintf("du -sb %s | awk '{print $1}'", dataDirPath)
-	output, err := r.execCommandOnPod(pod, dataSizeCommand)
+	output, err := r.executeCommandOnPod(pod, dataSizeCommand)
 	if err != nil {
 		return 0, err
 	}
@@ -168,6 +173,15 @@ func (r *MysqlClusterReconciler) calculateDataScore(dataSize int64) float64 {
 	// 计算数据量得分的逻辑
 	// 这里简单地将数据大小作为得分值
 	return float64(dataSize)
+}
+
+func (r *MysqlClusterReconciler) updateMasterGTIDSnapshotFromPod(pod *v1.Pod) error {
+	gtidSet, err := r.getMasterGTIDSet(pod)
+	if err != nil {
+		return err
+	}
+	r.MasterGTIDSnapshot = gtidSet
+	return nil
 }
 
 // 启动协程（只会启动一次）：定期更新主库的 GTID 快照
@@ -196,12 +210,10 @@ func (r *MysqlClusterReconciler) startAndUpdateGTIDSnapshot(ctx context.Context,
 			pod := &podList.Items[0]
 
 			// 更新主库的 GTID 快照
-			gtidSet, err := r.getMasterGTIDSet(pod)
-			if err != nil {
+			if err := r.updateMasterGTIDSnapshotFromPod(pod); err != nil {
 				fmt.Printf("Error getting master GTID set: %v\n", err)
 			} else {
-				r.MasterGTIDSnapshot = gtidSet
-				fmt.Printf("MasterGTIDSnapshot更新成功: %v\n", gtidSet)
+				fmt.Printf("MasterGTIDSnapshot更新成功: %v\n", r.MasterGTIDSnapshot)
 			}
 
 			// 每隔 1 分钟更新一次

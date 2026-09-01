@@ -63,6 +63,8 @@ func copyStatefulSetReconcileObject(destination, source client.Object) {
 		*destination = *source.(*corev1.Secret).DeepCopy()
 	case *corev1.ConfigMap:
 		*destination = *source.(*corev1.ConfigMap).DeepCopy()
+	case *corev1.Endpoints:
+		*destination = *source.(*corev1.Endpoints).DeepCopy()
 	case *appsv1.StatefulSet:
 		*destination = *source.(*appsv1.StatefulSet).DeepCopy()
 	case *databasev1.MysqlCluster:

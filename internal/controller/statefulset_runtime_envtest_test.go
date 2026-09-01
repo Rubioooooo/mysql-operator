@@ -216,14 +216,14 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		expectRuntimeObjectNotFound(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: mysqlStatefulSetName(cluster)}, &appsv1.StatefulSet{})
 	})
 
-	It("updates initialized StatefulSet replicas for scale-up and waits for members", func() {
+	It("updates initialized StatefulSet replicas before continuing into HA reconciliation", func() {
 		cluster := configureStatefulSetRuntimeCluster(ctx, "b2b-scale-up", "mysql-scale-up", 3, true)
 		deferStatefulSetRuntimeResourceCleanup(cluster)
 		statefulSet := createStatefulSetRuntimeWorkload(ctx, cluster, 2)
 		reconciler := statefulSetEnvtestReconciler()
 
 		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)})
-		Expect(err).NotTo(HaveOccurred())
+		Expect(err).To(MatchError(ContainSubstring(`endpoints "mysql-scale-up-master" not found`)))
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 
 		stored := &appsv1.StatefulSet{}
@@ -232,7 +232,7 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		Expect(*stored.Spec.Replicas).To(Equal(int32(3)))
 	})
 
-	It("performs safety before a safe scale-down and waits for ordinal removal", func() {
+	It("performs safety and a safe scale-down before continuing into HA reconciliation", func() {
 		cluster := configureStatefulSetRuntimeCluster(ctx, "b2b-scale-down-safe", "mysql-down-safe", 3, true)
 		deferStatefulSetRuntimeResourceCleanup(cluster)
 		statefulSet := createStatefulSetRuntimeWorkload(ctx, cluster, 4)
@@ -240,7 +240,7 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		reconciler := statefulSetEnvtestReconciler()
 
 		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)})
-		Expect(err).NotTo(HaveOccurred())
+		Expect(err).To(MatchError(ContainSubstring(`endpoints "mysql-down-safe-master" not found`)))
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 
 		stored := &appsv1.StatefulSet{}

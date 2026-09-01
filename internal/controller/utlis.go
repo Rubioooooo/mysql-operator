@@ -17,12 +17,6 @@ import (
 	v1 "k8s.io/api/core/v1"                // 核心 Kubernetes API 对象，例如 Pod 和 Service
 )
 
-// 检查 Pod 健康的函数
-func isPodHealthy(pod v1.Pod) bool {
-	// 实现健康检查逻辑，例如通过 Pod 的状态、容器状态等
-	return pod.Status.Phase == v1.PodRunning && len(pod.Status.ContainerStatuses) > 0 && pod.Status.ContainerStatuses[0].Ready
-}
-
 const (
 	mysqlRootClientCommand                = `MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot`
 	mysqlReplicationPasswordSQLAssignment = `replication_password_sql=$(printf '%s' "$MYSQL_REPLICATION_PASSWORD" | sed "s/\\\\/\\\\\\\\/g; s/'/''/g")`
@@ -45,18 +39,24 @@ func mysqlShowSlaveStatusCommand() string {
 }
 
 func mysqlShowMasterGTIDCommand() string {
-	return mysqlRootClientCommand + ` -e "SHOW MASTER STATUS\G" | grep 'Executed_Gtid_Set:' | awk '{print $2}'`
+	return mysqlRootClientCommand + ` -Nse "SELECT @@GLOBAL.gtid_executed;"`
 }
 
 func mysqlShowSlaveGTIDCommand() string {
-	return mysqlRootClientCommand + ` -e "SHOW SLAVE STATUS\G" | grep 'Retrieved_Gtid_Set:' | awk '{print $2}'`
+	return mysqlRootClientCommand + ` -Nse "SELECT @@GLOBAL.gtid_executed;"`
 }
 
 // 制作主从同步的函数
 func (r *MysqlClusterReconciler) setupMasterSlaveReplication(ctx context.Context, masterName string, slaveNames []string, cluster databasev1.MysqlCluster) error {
 	log := log.FromContext(ctx)
 	log.Info("setupMasterSlaveReplication函数", "masterName", masterName, "slaveNames", slaveNames)
+	if err := r.setupMysqlPrimary(ctx, masterName, cluster); err != nil {
+		return err
+	}
+	return r.setupMysqlReplicas(ctx, slaveNames, cluster)
+}
 
+func (r *MysqlClusterReconciler) setupMysqlPrimary(ctx context.Context, masterName string, cluster databasev1.MysqlCluster) error {
 	// 获取主库 Pod 对象
 	masterPod := &v1.Pod{}
 	masterPodKey := client.ObjectKey{Namespace: cluster.Namespace, Name: masterName}
@@ -74,7 +74,10 @@ func (r *MysqlClusterReconciler) setupMasterSlaveReplication(ctx context.Context
 	if err := r.labelPod(ctx, masterName, "master", cluster); err != nil {
 		return fmt.Errorf("failed to label master pod %s: %v", masterName, err)
 	}
+	return nil
+}
 
+func (r *MysqlClusterReconciler) setupMysqlReplicas(ctx context.Context, slaveNames []string, cluster databasev1.MysqlCluster) error {
 	// 配置每个从库: 如果从库名数组为空，则
 	for _, slaveName := range slaveNames { // 如果没有从库，则循环结束，不会配置从库
 		slavePod := &v1.Pod{}

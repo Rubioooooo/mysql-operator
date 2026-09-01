@@ -151,14 +151,6 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetRuntime(
 		return ctrl.Result{}, false, err
 	}
 
-	ready, err := r.mysqlStatefulSetMembersReady(ctx, cluster)
-	if err != nil {
-		return ctrl.Result{}, false, err
-	}
-	if !ready {
-		return ctrl.Result{}, false, nil
-	}
-
 	result, err := r.reconcileMasterSlave(ctx, *cluster)
 	if err != nil {
 		return result, false, err

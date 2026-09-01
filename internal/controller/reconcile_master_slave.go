@@ -71,6 +71,10 @@ func (r *MysqlClusterReconciler) checkMasterStatus(ctx context.Context, cluster 
 // 当主库挂掉时，需要选举新的主库并重新配置主从关系：
 func (r *MysqlClusterReconciler) handleMasterFailure(ctx context.Context, cluster databasev1.MysqlCluster) error {
 	log := log.FromContext(ctx)
+	oldPrimaryPods := &v1.PodList{}
+	if err := r.List(ctx, oldPrimaryPods, mysqlClusterPodListOptions(&cluster, "master")...); err != nil {
+		return fmt.Errorf("failed to list current primary Pods for MysqlCluster %s before election: %w", cluster.Name, err)
+	}
 
 	// 选举新的主库（假设选举逻辑已经实现）
 	newMasterName, remainingSlaves, err := r.electNewMaster(ctx, cluster)
@@ -80,9 +84,30 @@ func (r *MysqlClusterReconciler) handleMasterFailure(ctx context.Context, cluste
 
 	log.Info("选举出新主库", "newMasterName", newMasterName, "remainingSlaves", remainingSlaves)
 
-	// 重新配置主从关系
-	err = r.setupMasterSlaveReplication(ctx, newMasterName, remainingSlaves, cluster)
-	if err != nil {
+	// Promote and publish the new primary before changing the old primary role.
+	if err := r.setupMysqlPrimary(ctx, newMasterName, cluster); err != nil {
+		return err
+	}
+
+	// Demotion is a control-plane metadata operation and must not depend on the
+	// failed primary being reachable through MySQL.
+	for i := range oldPrimaryPods.Items {
+		oldPrimary := &oldPrimaryPods.Items[i]
+		if oldPrimary.Name == newMasterName {
+			continue
+		}
+		if err := r.labelPod(ctx, oldPrimary.Name, "slave", cluster); err != nil {
+			return fmt.Errorf(
+				"failed to demote old primary Pod %s/%s after promoting %s: %w",
+				oldPrimary.Namespace,
+				oldPrimary.Name,
+				newMasterName,
+				err,
+			)
+		}
+	}
+
+	if err := r.setupMysqlReplicas(ctx, remainingSlaves, cluster); err != nil {
 		return err
 	}
 
