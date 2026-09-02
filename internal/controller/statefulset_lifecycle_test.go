@@ -182,6 +182,8 @@ func TestStatefulSetLifecycleSafetyHelpers(t *testing.T) {
 			{name: "non numeric", labels: map[string]string{statefulSetPodIndexLabel: "abc"}, expectError: true},
 			{name: "zero", labels: map[string]string{statefulSetPodIndexLabel: "0"}, expectError: true},
 			{name: "negative", labels: map[string]string{statefulSetPodIndexLabel: "-1"}, expectError: true},
+			{name: "leading zero", labels: map[string]string{statefulSetPodIndexLabel: "01"}, expectError: true},
+			{name: "leading plus", labels: map[string]string{statefulSetPodIndexLabel: "+1"}, expectError: true},
 		}
 		for _, testCase := range testCases {
 			t.Run(testCase.name, func(t *testing.T) {

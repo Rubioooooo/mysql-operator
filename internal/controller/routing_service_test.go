@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -12,6 +14,22 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+type rolePublicationOrderClient struct {
+	*statefulSetReconcileMemoryClient
+	publications []string
+}
+
+func (c *rolePublicationOrderClient) Update(
+	ctx context.Context,
+	object client.Object,
+	options ...client.UpdateOption,
+) error {
+	if pod, ok := object.(*corev1.Pod); ok && pod.Labels[LabelMysqlRole] != "" {
+		c.publications = append(c.publications, fmt.Sprintf("%s:%s", pod.Name, pod.Labels[LabelMysqlRole]))
+	}
+	return c.statefulSetReconcileMemoryClient.Update(ctx, object, options...)
+}
 
 func TestMysqlRoutingServiceReconciliation(t *testing.T) {
 	ctx := context.Background()
@@ -194,5 +212,119 @@ func TestPrimaryRolePublicationOrdering(t *testing.T) {
 		g.Expect(reconciler.Get(ctx, client.ObjectKeyFromObject(pod), stored)).To(Succeed())
 		g.Expect(stored.Labels).To(HaveKeyWithValue(LabelMysqlRole, "master"))
 		g.Expect(stored.Labels).To(HaveKeyWithValue(LegacyLabelRole, "master"))
+	})
+}
+
+func TestInitializationTopologyPublicationOrdering(t *testing.T) {
+	ctx := context.Background()
+	cluster := statefulSetResourceTestCluster("initial-role-order", types.UID("initial-role-order-uid"))
+	cluster.Spec.MasterService = "initial-role-order-primary"
+	statefulSet := controlledStatefulSetForLifecycleTest(t, cluster, types.UID("initial-role-order-statefulset-uid"))
+	newTopology := func(t *testing.T) (*corev1.Pod, *corev1.Pod) {
+		t.Helper()
+		return statefulSetPodForLifecycleTest(t, cluster, statefulSet, 1),
+			statefulSetPodForLifecycleTest(t, cluster, statefulSet, 2)
+	}
+	initialPrimaryHost := cluster.Spec.MasterService
+
+	assertNoPublishedRoles := func(g *WithT, reconciler *MysqlClusterReconciler, pods ...*corev1.Pod) {
+		for _, pod := range pods {
+			stored := &corev1.Pod{}
+			g.Expect(reconciler.Get(ctx, client.ObjectKeyFromObject(pod), stored)).To(Succeed())
+			g.Expect(stored.Labels).NotTo(HaveKey(LabelMysqlRole))
+			g.Expect(stored.Labels).NotTo(HaveKey(LegacyLabelRole))
+		}
+	}
+
+	t.Run("replica database failure publishes no topology roles", func(t *testing.T) {
+		g := NewWithT(t)
+		primary, replica := newTopology(t)
+		var reconciler *MysqlClusterReconciler
+		reconciler = &MysqlClusterReconciler{
+			Client: newStatefulSetReconcileMemoryClient(statefulSet, primary, replica),
+			execCommandOnPodFn: func(pod *corev1.Pod, command string) (string, error) {
+				assertNoPublishedRoles(g, reconciler, primary, replica)
+				switch {
+				case pod.Name == primary.Name && command == mysqlPreparePrimaryCommand():
+					return "", nil
+				case pod.Name == replica.Name && command == mysqlShowSlaveStatusCommand():
+					return "", nil
+				case pod.Name == replica.Name && command == mysqlInitializeReplicaCommand(initialPrimaryHost):
+					return "", errors.New("replica database transition failed")
+				default:
+					return "", fmt.Errorf("unexpected command for %s: %s", pod.Name, command)
+				}
+			},
+		}
+
+		converged, err := reconciler.reconcileMysqlInitializationTopology(ctx, primary.Name, []string{replica.Name}, *cluster)
+		g.Expect(err).To(MatchError(ContainSubstring("replica database transition failed")))
+		g.Expect(converged).To(BeFalse())
+		assertNoPublishedRoles(g, reconciler, primary, replica)
+	})
+
+	t.Run("stage A database operations precede master-only publication", func(t *testing.T) {
+		g := NewWithT(t)
+		primary, replica := newTopology(t)
+		memoryClient := newStatefulSetReconcileMemoryClient(statefulSet, primary, replica)
+		orderedClient := &rolePublicationOrderClient{statefulSetReconcileMemoryClient: memoryClient}
+		commands := make([]string, 0, 3)
+		var reconciler *MysqlClusterReconciler
+		reconciler = &MysqlClusterReconciler{
+			Client: orderedClient,
+			execCommandOnPodFn: func(pod *corev1.Pod, command string) (string, error) {
+				assertNoPublishedRoles(g, reconciler, primary, replica)
+				commands = append(commands, pod.Name+":"+command)
+				return "", nil
+			},
+		}
+
+		converged, err := reconciler.reconcileMysqlInitializationTopology(ctx, primary.Name, []string{replica.Name}, *cluster)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(converged).To(BeFalse())
+		g.Expect(commands).To(Equal([]string{
+			primary.Name + ":" + mysqlPreparePrimaryCommand(),
+			replica.Name + ":" + mysqlShowSlaveStatusCommand(),
+			replica.Name + ":" + mysqlInitializeReplicaCommand(initialPrimaryHost),
+		}))
+		g.Expect(orderedClient.publications).To(Equal([]string{primary.Name + ":master"}))
+
+		freshCommand := mysqlInitializeReplicaCommand(initialPrimaryHost)
+		g.Expect(freshCommand).To(ContainSubstring("CHANGE MASTER TO"))
+		g.Expect(freshCommand).To(ContainSubstring("MASTER_AUTO_POSITION=1"))
+		g.Expect(freshCommand).To(ContainSubstring("START SLAVE"))
+		g.Expect(freshCommand).NotTo(ContainSubstring("STOP SLAVE"))
+		g.Expect(freshCommand).To(ContainSubstring(initialPrimaryHost))
+		g.Expect(freshCommand).NotTo(ContainSubstring(mysqlHeadlessServiceName(cluster)))
+	})
+
+	t.Run("already configured initialization retry uses stop change start with stable Primary Service", func(t *testing.T) {
+		g := NewWithT(t)
+		primary, replica := newTopology(t)
+		var retryCommand string
+		reconciler := &MysqlClusterReconciler{
+			Client: newStatefulSetReconcileMemoryClient(statefulSet, primary, replica),
+			execCommandOnPodFn: func(pod *corev1.Pod, command string) (string, error) {
+				switch {
+				case pod.Name == primary.Name && command == mysqlPreparePrimaryCommand():
+					return "", nil
+				case pod.Name == replica.Name && command == mysqlShowSlaveStatusCommand():
+					return "*************************** 1. row ***************************", nil
+				case pod.Name == replica.Name:
+					retryCommand = command
+					return "", nil
+				default:
+					return "", fmt.Errorf("unexpected command for %s: %s", pod.Name, command)
+				}
+			},
+		}
+
+		converged, err := reconciler.reconcileMysqlInitializationTopology(ctx, primary.Name, []string{replica.Name}, *cluster)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(converged).To(BeFalse())
+		g.Expect(retryCommand).To(Equal(mysqlConfigureReplicaCommand(initialPrimaryHost)))
+		g.Expect(strings.Index(retryCommand, "STOP SLAVE")).To(BeNumerically("<", strings.Index(retryCommand, "CHANGE MASTER TO")))
+		g.Expect(retryCommand).To(ContainSubstring(initialPrimaryHost))
+		g.Expect(retryCommand).NotTo(ContainSubstring(mysqlHeadlessServiceName(cluster)))
 	})
 }

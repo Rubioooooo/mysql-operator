@@ -24,6 +24,7 @@ func phase1HCluster(name string, initialized bool) *databasev1.MysqlCluster {
 	cluster.Status.CredentialsSecretUID = "phase1h-credential-secret-uid"
 	if initialized {
 		cluster.Annotations = map[string]string{"initialized": "true"}
+		cluster.Status.LastConvergedReplicas = replicaCountCopy(desiredReplicas(cluster))
 	}
 	return cluster
 }

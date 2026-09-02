@@ -17,6 +17,7 @@ import (
 const (
 	mysqlRootPasswordSecretKey        = "root-password"
 	mysqlReplicationPasswordSecretKey = "replication-password"
+	mysqlReplicationPasswordMaxBytes  = 32
 )
 
 func validateMysqlCredentialValue(secretIdentity, key string, value []byte) error {
@@ -28,6 +29,14 @@ func validateMysqlCredentialValue(secretIdentity, key string, value []byte) erro
 	}
 	if bytes.ContainsAny(value, "\r\n") {
 		return fmt.Errorf("credential Secret %s key %s must not contain CR or LF bytes", secretIdentity, key)
+	}
+	if key == mysqlReplicationPasswordSecretKey && len(value) > mysqlReplicationPasswordMaxBytes {
+		return fmt.Errorf(
+			"credential Secret %s key %s must not exceed %d bytes",
+			secretIdentity,
+			key,
+			mysqlReplicationPasswordMaxBytes,
+		)
 	}
 	return nil
 }

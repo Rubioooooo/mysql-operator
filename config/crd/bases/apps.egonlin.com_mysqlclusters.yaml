@@ -67,7 +67,7 @@ spec:
                 description: |-
                   MasterService is the stable Service name used to route traffic to the primary.
                   It is retained for API compatibility and is immutable after creation.
-                maxLength: 63
+                maxLength: 60
                 minLength: 1
                 pattern: ^[a-z]([-a-z0-9]*[a-z0-9])?$
                 type: string

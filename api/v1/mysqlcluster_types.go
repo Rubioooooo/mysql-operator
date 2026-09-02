@@ -59,7 +59,7 @@ type MysqlClusterSpec struct {
 	// MasterService is the stable Service name used to route traffic to the primary.
 	// It is retained for API compatibility and is immutable after creation.
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:MaxLength=60
 	// +kubebuilder:validation:Pattern="^[a-z]([-a-z0-9]*[a-z0-9])?$"
 	MasterService string `json:"masterService"`
 

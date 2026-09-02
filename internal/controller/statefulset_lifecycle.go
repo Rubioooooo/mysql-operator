@@ -49,6 +49,16 @@ func mysqlStatefulSetPodOrdinal(pod *corev1.Pod) (int32, error) {
 			ordinal,
 		)
 	}
+	if rawOrdinal != strconv.FormatInt(ordinal, 10) {
+		return 0, fmt.Errorf(
+			"Pod %s/%s has non-canonical %s label %q: expected %q",
+			pod.Namespace,
+			pod.Name,
+			statefulSetPodIndexLabel,
+			rawOrdinal,
+			strconv.FormatInt(ordinal, 10),
+		)
+	}
 
 	return int32(ordinal), nil
 }
@@ -81,6 +91,21 @@ func (r *MysqlClusterReconciler) validateAndSortMysqlStatefulSetPods(
 		}
 		seenOrdinals[ordinal] = pod.Name
 		members = append(members, mysqlStatefulSetMember{Ordinal: ordinal, Pod: pod.DeepCopy()})
+	}
+
+	for i := range members {
+		member := &members[i]
+		expectedPodName := mysqlStatefulSetPodName(cluster, member.Ordinal)
+		if member.Pod.Name != expectedPodName {
+			return nil, fmt.Errorf(
+				"Pod %s/%s ordinal identity does not match %s label %d: expected name %s",
+				member.Pod.Namespace,
+				member.Pod.Name,
+				statefulSetPodIndexLabel,
+				member.Ordinal,
+				expectedPodName,
+			)
+		}
 	}
 
 	sort.Slice(members, func(i, j int) bool {

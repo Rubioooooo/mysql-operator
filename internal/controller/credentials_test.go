@@ -106,6 +106,67 @@ func TestMysqlCredentialValidationAndIdentityPin(t *testing.T) {
 		}
 	})
 
+	t.Run("enforces the MySQL replication password byte limit only", func(t *testing.T) {
+		testCases := []struct {
+			name        string
+			key         string
+			value       []byte
+			expectError bool
+		}{
+			{
+				name:  "replication password exactly at limit",
+				key:   mysqlReplicationPasswordSecretKey,
+				value: []byte(strings.Repeat("r", mysqlReplicationPasswordMaxBytes)),
+			},
+			{
+				name:        "replication password over limit",
+				key:         mysqlReplicationPasswordSecretKey,
+				value:       []byte(strings.Repeat("s", mysqlReplicationPasswordMaxBytes+1)),
+				expectError: true,
+			},
+			{
+				name:  "root password over replication limit",
+				key:   mysqlRootPasswordSecretKey,
+				value: []byte(strings.Repeat("root", mysqlReplicationPasswordMaxBytes)),
+			},
+		}
+
+		for _, testCase := range testCases {
+			t.Run(testCase.name, func(t *testing.T) {
+				g := NewWithT(t)
+				err := validateMysqlCredentialValue("mysql-system/credentials", testCase.key, testCase.value)
+				if !testCase.expectError {
+					g.Expect(err).NotTo(HaveOccurred())
+					return
+				}
+				g.Expect(err).To(MatchError(ContainSubstring("must not exceed 32 bytes")))
+				g.Expect(err.Error()).NotTo(ContainSubstring(string(testCase.value)))
+			})
+		}
+	})
+
+	t.Run("rejects an oversized replication password before UID pinning without mutating the external Secret", func(t *testing.T) {
+		g := NewWithT(t)
+		cluster := credentialTestCluster("credentials-replication-too-long", "mysql-system")
+		oversizedReplicationPassword := []byte(strings.Repeat("x", mysqlReplicationPasswordMaxBytes+1))
+		secret := immutableCredentialSecret(cluster, []byte(strings.Repeat("root", 16)), oversizedReplicationPassword)
+		reconciler := newStatefulSetReconcileTestReconciler(t, newStatefulSetReconcileTestScheme(t), cluster, secret)
+		memoryClient := reconciler.Client.(*statefulSetReconcileMemoryClient)
+		before := &corev1.Secret{}
+		g.Expect(reconciler.Get(ctx, client.ObjectKeyFromObject(secret), before)).To(Succeed())
+
+		err := reconciler.ensureMysqlCredentials(ctx, cluster)
+		g.Expect(err).To(MatchError(ContainSubstring("must not exceed 32 bytes")))
+		g.Expect(err.Error()).NotTo(ContainSubstring(string(oversizedReplicationPassword)))
+		g.Expect(cluster.Status.CredentialsSecretUID).To(BeEmpty())
+		g.Expect(memoryClient.statusPatchCount).To(Equal(0))
+
+		storedSecret := &corev1.Secret{}
+		g.Expect(reconciler.Get(ctx, client.ObjectKeyFromObject(secret), storedSecret)).To(Succeed())
+		g.Expect(storedSecret).To(Equal(before))
+		g.Expect(metav1.IsControlledBy(storedSecret, cluster)).To(BeFalse())
+	})
+
 	t.Run("accepts an externally owned immutable Secret without mutation or adoption", func(t *testing.T) {
 		g := NewWithT(t)
 		cluster := credentialTestCluster("credentials-external", "mysql-system")
@@ -239,6 +300,7 @@ func TestMysqlCredentialCommandBoundary(t *testing.T) {
 	commands := []string{
 		mysqlPreparePrimaryCommand(),
 		mysqlConfigureReplicaCommand("mysql-primary"),
+		mysqlInitializeReplicaCommand("mysql-1.mysql-headless"),
 		mysqlShowSlaveStatusCommand(),
 		mysqlShowMasterGTIDCommand(),
 		mysqlShowSlaveGTIDCommand(),
@@ -249,7 +311,7 @@ func TestMysqlCredentialCommandBoundary(t *testing.T) {
 		g.Expect(command).NotTo(ContainSubstring(knownRootPassword))
 		g.Expect(command).NotTo(ContainSubstring(knownReplicationPassword))
 	}
-	for _, command := range commands[:2] {
+	for _, command := range commands[:3] {
 		g.Expect(command).To(ContainSubstring("MYSQL_REPLICATION_PASSWORD"))
 		g.Expect(command).To(ContainSubstring("replication_password_sql"))
 		g.Expect(command).To(ContainSubstring(`sed "s/\\\\/\\\\\\\\/g; s/'/''/g"`))

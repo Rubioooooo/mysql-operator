@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 
 	databasev1 "github.com/egonlin/api/v1"
 
@@ -98,6 +99,28 @@ var _ = Describe("MysqlCluster API admission contract", func() {
 		err := k8sClient.Create(ctx, cluster)
 		Expect(err).To(HaveOccurred())
 		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error: %v", err)
+	})
+
+	It("enforces the MySQL 5.7 replication host limit only on masterService", func() {
+		acceptedMaster := validMysqlClusterForAdmission("api-master-service-60")
+		acceptedMaster.Spec.MasterService = strings.Repeat("m", 60)
+		Expect(k8sClient.Create(ctx, acceptedMaster)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupMysqlClusterForAdmission(context.Background(), acceptedMaster)
+		})
+
+		rejectedMaster := validMysqlClusterForAdmission("api-master-service-61")
+		rejectedMaster.Spec.MasterService = strings.Repeat("m", 61)
+		err := k8sClient.Create(ctx, rejectedMaster)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error: %v", err)
+
+		acceptedSlave := validMysqlClusterForAdmission("api-slave-service-63")
+		acceptedSlave.Spec.SlaveService = strings.Repeat("s", 63)
+		Expect(k8sClient.Create(ctx, acceptedSlave)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupMysqlClusterForAdmission(context.Background(), acceptedSlave)
+		})
 	})
 
 	It("rejects an invalid credential Secret name", func() {

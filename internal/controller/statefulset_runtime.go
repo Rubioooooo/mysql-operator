@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	databasev1 "github.com/egonlin/api/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -10,6 +11,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+const mysqlInitializationConvergenceRequeueAfter = 2 * time.Second
 
 func (r *MysqlClusterReconciler) ensureMysqlRoutingServices(
 	ctx context.Context,
@@ -64,6 +67,9 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetInitialization(
 	ctx context.Context,
 	cluster *databasev1.MysqlCluster,
 ) (ctrl.Result, bool, error) {
+	if err := validateMysqlReplicationMasterHost(cluster); err != nil {
+		return ctrl.Result{}, false, err
+	}
 	if err := r.validateNoLegacyRawPodLifecycle(ctx, cluster); err != nil {
 		return ctrl.Result{}, false, err
 	}
@@ -92,8 +98,12 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetInitialization(
 	}
 
 	primaryName, replicaNames := mysqlStatefulSetInitialTopology(cluster)
-	if err := r.setupMasterSlaveReplication(ctx, primaryName, replicaNames, *cluster); err != nil {
+	topologyConverged, err := r.reconcileMysqlInitializationTopology(ctx, primaryName, replicaNames, *cluster)
+	if err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("failed to initialize StatefulSet MySQL topology: %w", err)
+	}
+	if !topologyConverged {
+		return ctrl.Result{RequeueAfter: mysqlInitializationConvergenceRequeueAfter}, false, nil
 	}
 
 	if err := r.markMysqlClusterInitialized(ctx, cluster); err != nil {
@@ -107,6 +117,17 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetRuntime(
 	ctx context.Context,
 	cluster *databasev1.MysqlCluster,
 ) (ctrl.Result, bool, error) {
+	if err := validateMysqlReplicationMasterHost(cluster); err != nil {
+		return ctrl.Result{}, false, err
+	}
+	if err := validateMysqlClusterReplicaTransitionStatus(&cluster.Status); err != nil {
+		return ctrl.Result{}, false, fmt.Errorf(
+			"MysqlCluster %s/%s has invalid replica transition status: %w",
+			cluster.Namespace,
+			cluster.Name,
+			err,
+		)
+	}
 	if err := r.validateNoLegacyRawPodLifecycle(ctx, cluster); err != nil {
 		return ctrl.Result{}, false, err
 	}
@@ -126,13 +147,90 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetRuntime(
 		return ctrl.Result{}, false, err
 	}
 
+	// Ownership ambiguity is globally unsafe even though member readiness is
+	// intentionally not a stable-runtime prerequisite.
+	members, err := r.listMysqlStatefulSetPods(ctx, cluster)
+	if err != nil {
+		return ctrl.Result{}, false, err
+	}
+
+	desiredReplicaCount := desiredReplicas(cluster)
+	if cluster.Status.LastConvergedReplicas == nil {
+		// An initialized pre-B2 object has no durable checkpoint. An existing
+		// owned StatefulSet is the authoritative compatibility checkpoint. If
+		// the child is missing, recording the current desired count preserves
+		// the pre-B2 initialized child-recreation behavior without inventing a
+		// different historical replica count.
+		checkpoint := desiredReplicaCount
+		if statefulSetExists {
+			checkpoint = mysqlStatefulSetCurrentReplicas(existingStatefulSet)
+		}
+		var transition *databasev1.MysqlClusterReplicaTransitionStatus
+		if checkpoint != desiredReplicaCount {
+			transition = &databasev1.MysqlClusterReplicaTransitionStatus{
+				FromReplicas:   checkpoint,
+				TargetReplicas: desiredReplicaCount,
+			}
+		}
+		if err := r.persistMysqlClusterReplicaTransitionStatus(ctx, cluster, checkpoint, transition); err != nil {
+			return ctrl.Result{}, false, err
+		}
+		return ctrl.Result{}, false, nil
+	}
+
+	transition := cluster.Status.ReplicaTransition
+	if transition != nil && transition.TargetReplicas != desiredReplicaCount {
+		updatedTransition := &databasev1.MysqlClusterReplicaTransitionStatus{
+			FromReplicas:   transition.FromReplicas,
+			TargetReplicas: desiredReplicaCount,
+		}
+		if err := r.persistMysqlClusterReplicaTransitionStatus(
+			ctx,
+			cluster,
+			*cluster.Status.LastConvergedReplicas,
+			updatedTransition,
+		); err != nil {
+			return ctrl.Result{}, false, err
+		}
+		return ctrl.Result{}, false, nil
+	}
+
+	if transition == nil && *cluster.Status.LastConvergedReplicas != desiredReplicaCount {
+		if statefulSetExists {
+			if err := r.validateMysqlStatefulSetScaleDownSafety(
+				ctx,
+				cluster,
+				mysqlStatefulSetCurrentReplicas(existingStatefulSet),
+				desiredReplicaCount,
+			); err != nil {
+				return ctrl.Result{}, false, err
+			}
+		}
+		transition = &databasev1.MysqlClusterReplicaTransitionStatus{
+			FromReplicas:   *cluster.Status.LastConvergedReplicas,
+			TargetReplicas: desiredReplicaCount,
+		}
+		if err := r.persistMysqlClusterReplicaTransitionStatus(
+			ctx,
+			cluster,
+			*cluster.Status.LastConvergedReplicas,
+			transition,
+		); err != nil {
+			return ctrl.Result{}, false, err
+		}
+		return ctrl.Result{}, false, nil
+	}
+
+	effectiveTarget := desiredReplicaCount
+	if transition != nil {
+		effectiveTarget = transition.TargetReplicas
+	}
 	if statefulSetExists {
-		currentReplicas := mysqlStatefulSetCurrentReplicas(existingStatefulSet)
 		if err := r.validateMysqlStatefulSetScaleDownSafety(
 			ctx,
 			cluster,
-			currentReplicas,
-			desiredReplicas(cluster),
+			mysqlStatefulSetCurrentReplicas(existingStatefulSet),
+			effectiveTarget,
 		); err != nil {
 			return ctrl.Result{}, false, err
 		}
@@ -150,10 +248,30 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetRuntime(
 	if _, err := r.ensureMysqlStatefulSet(ctx, cluster); err != nil {
 		return ctrl.Result{}, false, err
 	}
+	if transition != nil {
+		members, err = r.listMysqlStatefulSetPods(ctx, cluster)
+		if err != nil {
+			return ctrl.Result{}, false, err
+		}
+		if !mysqlReplicaTransitionDeltaReady(members, transition) {
+			return ctrl.Result{}, false, nil
+		}
+	}
 
 	result, err := r.reconcileMasterSlave(ctx, *cluster)
 	if err != nil {
 		return result, false, err
+	}
+	if transition != nil && mysqlReplicaTransitionFullyConverged(members, transition.TargetReplicas) {
+		if err := r.persistMysqlClusterReplicaTransitionStatus(
+			ctx,
+			cluster,
+			transition.TargetReplicas,
+			nil,
+		); err != nil {
+			return ctrl.Result{}, false, err
+		}
+		return ctrl.Result{}, false, nil
 	}
 	return result, true, nil
 }

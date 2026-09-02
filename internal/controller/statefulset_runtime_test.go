@@ -82,6 +82,9 @@ func TestMysqlClusterLifecycleAnnotationContract(t *testing.T) {
 					mysqlClusterInitializedAnnotation: *testCase.annotation,
 				}
 			}
+			if testCase.expectRuntimePath {
+				cluster.Status.LastConvergedReplicas = replicaCountCopy(desiredReplicas(cluster))
+			}
 
 			initialized, stateErr := mysqlClusterIsInitialized(cluster)
 			if testCase.expectInvalid {
