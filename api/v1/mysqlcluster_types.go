@@ -92,6 +92,15 @@ const (
 	MysqlClusterPhaseFailed       MysqlClusterPhase = "Failed"
 )
 
+// MysqlClusterReplicaTransitionStatus records an active replica-count transition.
+type MysqlClusterReplicaTransitionStatus struct {
+	// FromReplicas is the last stable replica count from which the transition began.
+	FromReplicas int32 `json:"fromReplicas"`
+
+	// TargetReplicas is the current desired replica count for the transition.
+	TargetReplicas int32 `json:"targetReplicas"`
+}
+
 // MysqlClusterStatus defines the observed state of MysqlCluster.
 //
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.credentialsSecretUID) || (has(self.credentialsSecretUID) && self.credentialsSecretUID == oldSelf.credentialsSecretUID)",message="credentialsSecretUID is write-once and cannot be changed or cleared"
@@ -111,6 +120,14 @@ type MysqlClusterStatus struct {
 
 	// ReadyReplicas is the number of MySQL members currently ready.
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// LastConvergedReplicas is the replica count of the most recently completed
+	// stable lifecycle state.
+	LastConvergedReplicas *int32 `json:"lastConvergedReplicas,omitempty"`
+
+	// ReplicaTransition records an active replica-count transition. Nil means no
+	// replica-count transition is currently recorded.
+	ReplicaTransition *MysqlClusterReplicaTransitionStatus `json:"replicaTransition,omitempty"`
 
 	// CredentialsSecretUID is the UID of the immutable external credential
 	// Secret accepted for this MysqlCluster lifecycle.

@@ -278,6 +278,12 @@ spec:
                   observed.
                 format: int32
                 type: integer
+              lastConvergedReplicas:
+                description: |-
+                  LastConvergedReplicas is the replica count of the most recently completed
+                  stable lifecycle state.
+                format: int32
+                type: integer
               master:
                 description: |-
                   Master is retained for compatibility with the original API.
@@ -305,6 +311,25 @@ spec:
                   ready.
                 format: int32
                 type: integer
+              replicaTransition:
+                description: |-
+                  ReplicaTransition records an active replica-count transition. Nil means no
+                  replica-count transition is currently recorded.
+                properties:
+                  fromReplicas:
+                    description: FromReplicas is the last stable replica count from
+                      which the transition began.
+                    format: int32
+                    type: integer
+                  targetReplicas:
+                    description: TargetReplicas is the current desired replica count
+                      for the transition.
+                    format: int32
+                    type: integer
+                required:
+                - fromReplicas
+                - targetReplicas
+                type: object
               slaves:
                 description: |-
                   Slaves is retained for compatibility with the original API.
