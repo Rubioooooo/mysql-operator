@@ -258,11 +258,13 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetRuntime(
 		}
 	}
 
-	result, err := r.reconcileMasterSlave(ctx, *cluster)
+	result, replicaDomainConverged, err := r.reconcileMasterSlave(ctx, *cluster)
 	if err != nil {
 		return result, false, err
 	}
-	if transition != nil && mysqlReplicaTransitionFullyConverged(members, transition.TargetReplicas) {
+	if transition != nil &&
+		replicaDomainConverged &&
+		mysqlReplicaTransitionFullyConverged(members, transition.TargetReplicas) {
 		if err := r.persistMysqlClusterReplicaTransitionStatus(
 			ctx,
 			cluster,
@@ -272,6 +274,9 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetRuntime(
 			return ctrl.Result{}, false, err
 		}
 		return ctrl.Result{}, false, nil
+	}
+	if !replicaDomainConverged && result.RequeueAfter > 0 {
+		return result, false, nil
 	}
 	return result, true, nil
 }

@@ -189,7 +189,7 @@ func TestPhase1HRuntimeReadinessGates(t *testing.T) {
 				if pod.Name == replica2.Name {
 					return "", errors.New("local MySQL socket is not ready")
 				}
-				return "Slave_SQL_Running: Yes\nSlave_IO_Running: Yes\n", nil
+				return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
 			}
 			return "", fmt.Errorf("unexpected command for Pod %s: %s", pod.Name, command)
 		}
@@ -340,8 +340,8 @@ func TestPhase1HOwnershipBeforeSQL(t *testing.T) {
 			return "", nil
 		}
 
-		_, err := reconciler.reconcileMasterSlave(ctx, *cluster)
-		g.Expect(err).To(MatchError(ContainSubstring("primary preparation SQL")))
+		_, _, err := reconciler.reconcileMasterSlave(ctx, *cluster)
+		g.Expect(err).To(HaveOccurred())
 		g.Expect(err).To(MatchError(ContainSubstring("has no controller owner")))
 		g.Expect(primarySQLExecCalls).To(Equal(0))
 	})

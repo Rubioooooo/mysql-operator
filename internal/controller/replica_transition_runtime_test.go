@@ -63,14 +63,18 @@ func phase2B2StoredStatefulSet(t *testing.T, reconciler *MysqlClusterReconciler,
 	return stored
 }
 
-func phase2B2HealthyDomainExec(t *testing.T, reconciler *MysqlClusterReconciler) *int {
+func phase2B2HealthyDomainExec(
+	t *testing.T,
+	reconciler *MysqlClusterReconciler,
+	cluster *databasev1.MysqlCluster,
+) *int {
 	t.Helper()
 	calls := 0
 	reconciler.execCommandOnPodFn = func(_ *corev1.Pod, command string) (string, error) {
 		calls++
 		switch command {
 		case mysqlShowSlaveStatusCommand():
-			return "Slave_SQL_Running: Yes\nSlave_IO_Running: Yes\n", nil
+			return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
 		case mysqlPreparePrimaryCommand(), mysqlConfigureReplicaCommand(""):
 			return "", nil
 		}
@@ -329,7 +333,7 @@ func TestPhase2B2ScaleUpDeltaGate(t *testing.T) {
 			if pod.Name == replica2.Name && command == mysqlShowSlaveStatusCommand() {
 				return "", errors.New("established replica MySQL is unavailable")
 			}
-			return "Slave_SQL_Running: Yes\nSlave_IO_Running: Yes\n", nil
+			return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
 		}
 
 		_, complete, err := reconciler.reconcileStatefulSetRuntime(ctx, cluster)
@@ -403,7 +407,7 @@ func TestPhase2B2ScaleDownDeltaGate(t *testing.T) {
 			replica3,
 			phase1HEndpoints(cluster, primary1),
 		)
-		execCalls := phase2B2HealthyDomainExec(t, reconciler)
+		execCalls := phase2B2HealthyDomainExec(t, reconciler, cluster)
 
 		_, complete, err := reconciler.reconcileStatefulSetRuntime(ctx, cluster)
 		g.Expect(err).NotTo(HaveOccurred())
@@ -444,7 +448,7 @@ func TestPhase2B2ScaleDownDeltaGate(t *testing.T) {
 		primary := phase1HPod(t, cluster, statefulSet, 1, "master", true)
 		replica2 := phase1HPod(t, cluster, statefulSet, 2, "slave", true)
 		reconciler := phase1HReconciler(t, cluster, statefulSet, phase1HCredentialSecret(cluster), primary, replica2, phase1HEndpoints(cluster, primary))
-		execCalls := phase2B2HealthyDomainExec(t, reconciler)
+		execCalls := phase2B2HealthyDomainExec(t, reconciler, cluster)
 
 		_, complete, err := reconciler.reconcileStatefulSetRuntime(ctx, cluster)
 		g.Expect(err).NotTo(HaveOccurred())
@@ -559,7 +563,7 @@ func TestPhase2B2CompletionDurability(t *testing.T) {
 		primary := phase1HPod(t, cluster, statefulSet, 1, "master", true)
 		newReplica := phase1HPod(t, cluster, statefulSet, 3, "slave", true)
 		first := phase1HReconciler(t, cluster, statefulSet, phase1HCredentialSecret(cluster), primary, newReplica, phase1HEndpoints(cluster, primary))
-		firstCalls := phase2B2HealthyDomainExec(t, first)
+		firstCalls := phase2B2HealthyDomainExec(t, first, cluster)
 
 		_, complete, err := first.reconcileStatefulSetRuntime(ctx, cluster)
 		g.Expect(err).NotTo(HaveOccurred())
@@ -571,7 +575,7 @@ func TestPhase2B2CompletionDurability(t *testing.T) {
 
 		recoveredReplica := phase1HPod(t, stored, statefulSet, 2, "slave", true)
 		second := phase1HReconciler(t, stored, statefulSet, phase1HCredentialSecret(stored), primary, recoveredReplica, newReplica, phase1HEndpoints(stored, primary))
-		secondCalls := phase2B2HealthyDomainExec(t, second)
+		secondCalls := phase2B2HealthyDomainExec(t, second, stored)
 		_, complete, err = second.reconcileStatefulSetRuntime(ctx, stored)
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(complete).To(BeFalse())

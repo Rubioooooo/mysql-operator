@@ -1,55 +1,38 @@
 package controller
 
 import (
-	"context"                                   // 用于处理上下文，提供超时、取消等操作
-	"fmt"                                       // 格式化I/O函数，如字符串格式化和打印
+	"context" // 用于处理上下文，提供超时、取消等操作
+	"fmt"     // 格式化I/O函数，如字符串格式化和打印
+	"strings"
+
 	"sigs.k8s.io/controller-runtime/pkg/client" // 提供与 Kubernetes API 交互的客户端
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"strings"
 
 	databasev1 "github.com/egonlin/api/v1" // 导入自定义的 MySQLCluster API 资源定义
 	v1 "k8s.io/api/core/v1"                // 核心 Kubernetes API 对象，例如 Pod 和 Service
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-// 主从调谐逻辑
-func (r *MysqlClusterReconciler) reconcileMasterSlave(ctx context.Context, cluster databasev1.MysqlCluster) (ctrl.Result, error) {
+// 主从调谐逻辑. The bool reports only whether the replica database
+// domain is semantically converged; a successfully handled HA path returns false.
+func (r *MysqlClusterReconciler) reconcileMasterSlave(ctx context.Context, cluster databasev1.MysqlCluster) (ctrl.Result, bool, error) {
 	// 检查主库状态
 	masterAlive, err := r.checkMasterStatus(ctx, cluster)
 	if err != nil {
 		// 如果检查主库状态时出现错误，则返回错误并重新排队调谐
-		return ctrl.Result{}, err
+		return ctrl.Result{}, false, err
 	}
 
 	if !masterAlive {
 		// 主库挂掉的情况处理
 		if err := r.handleMasterFailure(ctx, cluster); err != nil {
 			// 如果处理主库故障时出现错误，则返回错误并重新排队调谐
-			return ctrl.Result{}, err
+			return ctrl.Result{}, false, err
 		}
-	} else {
-		// 主库正常时，检查所有从库的状态
-		masterPodName, failedReplicas, err := r.checkReplicaStatus(ctx, cluster)
-		if err != nil {
-			// 如果检查从库状态时出现错误，则返回错误并重新排队调谐
-			return ctrl.Result{}, err
-		}
-
-		// 重新配置失败的从库
-		if err := r.setupMasterSlaveReplication(ctx, masterPodName, failedReplicas, cluster); err != nil {
-			// 如果重新配置失败，则返回错误并重新排队调谐
-			return ctrl.Result{}, err
-		}
-
-		// 确保所有非主库的 Pod 标签都是 slave
-		if err := r.ensureSlaveRoles(ctx, cluster); err != nil {
-			// 如果确保从库标签时出现错误，则返回错误并重新排队调谐
-			return ctrl.Result{}, err
-		}
+		return ctrl.Result{}, false, nil
 	}
 
-	// 所有操作成功后，返回成功结果
-	return ctrl.Result{}, nil
+	return r.reconcileMysqlHealthyPrimaryRuntime(ctx, &cluster)
 }
 
 // 通过查看 master-service 关联的 endpoint 是否为空来判断主库是否挂掉：
