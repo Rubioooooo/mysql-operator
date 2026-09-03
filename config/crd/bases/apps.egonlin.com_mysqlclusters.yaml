@@ -284,9 +284,30 @@ spec:
                 properties:
                   failover:
                     description: Failover records an active durable failover plan.
-                      Phase 5-A advances only Fencing.
                     properties:
+                      candidate:
+                        description: Candidate is the canonical StatefulSet Pod selected
+                          by GTID-safe election.
+                        minLength: 1
+                        type: string
+                      candidateUID:
+                        description: CandidateUID binds Candidate to the exact Pod
+                          incarnation that was elected.
+                        minLength: 1
+                        type: string
                       failedPrimary:
+                        minLength: 1
+                        type: string
+                      failedPrimaryGTIDSet:
+                        description: |-
+                          FailedPrimaryGTIDSet is the authoritative fenced-primary GTID set used by
+                          election. Nil means no snapshot was captured; a pointer to "" is a valid
+                          authoritative empty GTID set.
+                        type: string
+                      failedPrimaryServerUUID:
+                        description: |-
+                          FailedPrimaryServerUUID is the freshly observed MySQL server UUID used to
+                          validate each candidate's replication-source identity.
                         minLength: 1
                         type: string
                       failedPrimaryUID:
@@ -328,6 +349,21 @@ spec:
                       rule: self.fenceState != 'Verified' || (has(self.fencedPrimaryUID)
                         && self.fencedPrimaryUID.size() > 0 && self.fencedPrimaryUID
                         == self.failedPrimaryUID)
+                    - message: CandidateSelected and later stages require a verified
+                        fence and complete election proof
+                      rule: self.stage == 'Fencing' || (self.fenceState == 'Verified'
+                        && has(self.fencedPrimaryUID) && self.fencedPrimaryUID ==
+                        self.failedPrimaryUID && has(self.candidate) && self.candidate.size()
+                        > 0 && has(self.candidateUID) && self.candidateUID.size()
+                        > 0 && has(self.failedPrimaryServerUUID) && self.failedPrimaryServerUUID.size()
+                        > 0 && has(self.failedPrimaryGTIDSet))
+                    - message: the election candidate must differ from the failed
+                        primary identity
+                      rule: self.stage == 'Fencing' || (self.candidate != self.failedPrimary
+                        && self.candidateUID != self.failedPrimaryUID)
+                    - message: Fencing must not carry candidate-selection proof
+                      rule: self.stage != 'Fencing' || (!has(self.candidate) && !has(self.candidateUID)
+                        && !has(self.failedPrimaryServerUUID) && !has(self.failedPrimaryGTIDSet))
                   failureCount:
                     description: FailureCount is the number of consecutive failure
                       observations for PrimaryUID.

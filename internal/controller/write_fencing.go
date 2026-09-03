@@ -195,6 +195,7 @@ func (r *MysqlClusterReconciler) persistMysqlFencingBlocked(
 ) (ctrl.Result, bool, error) {
 	desired := cluster.Status.HA.DeepCopy()
 	desired.State = databasev1.MysqlClusterHAStateDegraded
+	clearMysqlElectionProof(desired.Failover)
 	desired.Failover.FenceState = databasev1.MysqlClusterFenceStateBlocked
 	desired.Failover.FencedPrimaryUID = ""
 	if _, err := r.persistMysqlClusterHAStatus(ctx, cluster, desired); err != nil {
@@ -209,6 +210,7 @@ func (r *MysqlClusterReconciler) persistMysqlFencingPending(
 ) (ctrl.Result, bool, error) {
 	desired := cluster.Status.HA.DeepCopy()
 	desired.State = databasev1.MysqlClusterHAStateFailoverInProgress
+	clearMysqlElectionProof(desired.Failover)
 	desired.Failover.FenceState = databasev1.MysqlClusterFenceStatePending
 	desired.Failover.FencedPrimaryUID = ""
 	if _, err := r.persistMysqlClusterHAStatus(ctx, cluster, desired); err != nil {
@@ -223,6 +225,7 @@ func (r *MysqlClusterReconciler) persistMysqlFenceVerified(
 ) (ctrl.Result, bool, error) {
 	desired := cluster.Status.HA.DeepCopy()
 	desired.State = databasev1.MysqlClusterHAStateFailoverInProgress
+	clearMysqlElectionProof(desired.Failover)
 	desired.Failover.FenceState = databasev1.MysqlClusterFenceStateVerified
 	desired.Failover.FencedPrimaryUID = desired.Failover.FailedPrimaryUID
 	if _, err := r.persistMysqlClusterHAStatus(ctx, cluster, desired); err != nil {
@@ -330,6 +333,11 @@ func (r *MysqlClusterReconciler) reconcileMysqlFailoverFencing(
 	if err != nil {
 		return r.persistMysqlFencingBlocked(ctx, cluster)
 	}
+	if role == mysqlPublishedRoleNone {
+		if _, err := r.listMysqlStatefulSetPods(ctx, cluster); err != nil {
+			return ctrl.Result{}, false, err
+		}
+	}
 	writeSafety, err := r.observeMysqlWriteSafety(ctx, pod, cluster)
 	if err != nil {
 		return r.persistMysqlFencingBlocked(ctx, cluster)
@@ -346,8 +354,12 @@ func (r *MysqlClusterReconciler) reconcileMysqlFailoverFencing(
 			if err := r.clearMysqlPublishedRole(ctx, cluster, pod.Name, failover.FailedPrimaryUID); err != nil {
 				return r.persistMysqlFencingBlocked(ctx, cluster)
 			}
+			return ctrl.Result{RequeueAfter: mysqlHAFailureRequeueAfter}, false, nil
 		}
-		return ctrl.Result{RequeueAfter: mysqlHAFailureRequeueAfter}, false, nil
+		if role != mysqlPublishedRoleNone {
+			return r.persistMysqlFencingBlocked(ctx, cluster)
+		}
+		return r.reconcileMysqlGTIDElection(ctx, cluster)
 
 	case mysqlWriteRoleWritable:
 		if failover.FenceState == databasev1.MysqlClusterFenceStateVerified || failover.FencedPrimaryUID != "" {

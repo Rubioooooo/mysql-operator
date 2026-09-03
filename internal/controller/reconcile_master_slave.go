@@ -16,10 +16,13 @@ import (
 // 主从调谐逻辑. The bool reports only whether the replica database
 // domain is semantically converged; a successfully handled HA path returns false.
 func (r *MysqlClusterReconciler) reconcileMasterSlave(ctx context.Context, cluster databasev1.MysqlCluster) (ctrl.Result, bool, error) {
-	if cluster.Status.HA != nil &&
-		cluster.Status.HA.Failover != nil &&
-		cluster.Status.HA.Failover.Stage == databasev1.MysqlClusterFailoverStageFencing {
-		return r.reconcileMysqlFailoverFencing(ctx, &cluster)
+	if cluster.Status.HA != nil && cluster.Status.HA.Failover != nil {
+		switch cluster.Status.HA.Failover.Stage {
+		case databasev1.MysqlClusterFailoverStageFencing:
+			return r.reconcileMysqlFailoverFencing(ctx, &cluster)
+		case databasev1.MysqlClusterFailoverStageCandidateSelected:
+			return r.reconcileMysqlCandidateSelected(ctx, &cluster)
+		}
 	}
 
 	observation, err := r.observeMysqlPrimaryFailure(ctx, &cluster)

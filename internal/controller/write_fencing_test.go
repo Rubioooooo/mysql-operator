@@ -412,14 +412,28 @@ func TestPhase5AActiveRoleNoneTopologyBypassesOrdinaryZeroPrimaryGuard(t *testin
 	delete(primary.Labels, LegacyLabelRole)
 	cluster.Status.HA = phase5FencingHA(primary, databasev1.MysqlClusterFenceStateVerified)
 	reconciler := phase1HReconciler(t, cluster, statefulSet, primary)
+	commands := make([]string, 0, 3)
 	reconciler.execCommandOnPodFn = func(_ *corev1.Pod, command string) (string, error) {
-		g.Expect(command).To(Equal(mysqlWriteSafetyObservationCommand()))
-		return "1\t1\tON\tON\n", nil
+		commands = append(commands, command)
+		switch command {
+		case mysqlWriteSafetyObservationCommand():
+			return "1\t1\tON\tON\n", nil
+		case mysqlElectionReferenceCommand():
+			return phase5BElectionReferenceOutput(phase5BPrimaryServerUUID, "uuid:1-10"), nil
+		default:
+			return "", fmt.Errorf("unexpected command after the role-none Phase 5-A endpoint: %s", command)
+		}
 	}
 
 	_, _, err := reconciler.reconcileMasterSlave(ctx, *cluster)
 	g.Expect(err).NotTo(HaveOccurred())
 	stored := phase4StoredCluster(t, reconciler, cluster)
-	g.Expect(stored.Status.HA.State).To(Equal(databasev1.MysqlClusterHAStateFailoverInProgress))
+	g.Expect(commands).To(Equal([]string{
+		mysqlWriteSafetyObservationCommand(),
+		mysqlWriteSafetyObservationCommand(),
+		mysqlElectionReferenceCommand(),
+	}))
+	g.Expect(stored.Status.HA.State).To(Equal(databasev1.MysqlClusterHAStateDegraded))
 	g.Expect(stored.Status.HA.Failover.FenceState).To(Equal(databasev1.MysqlClusterFenceStateVerified))
+	g.Expect(stored.Status.HA.Failover.Candidate).To(BeEmpty())
 }

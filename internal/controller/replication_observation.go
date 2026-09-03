@@ -21,6 +21,7 @@ const (
 type mysqlReplicationChannelObservation struct {
 	Configured   bool
 	MasterHost   string
+	MasterUUID   string
 	MasterUser   string
 	AutoPosition string
 	IORunning    string
@@ -84,6 +85,7 @@ func parseMysqlShowSlaveStatus(output string) (mysqlReplicationChannelObservatio
 	return mysqlReplicationChannelObservation{
 		Configured:   true,
 		MasterHost:   fields["Master_Host"],
+		MasterUUID:   fields["Master_UUID"],
 		MasterUser:   fields["Master_User"],
 		AutoPosition: fields["Auto_Position"],
 		IORunning:    fields["Slave_IO_Running"],

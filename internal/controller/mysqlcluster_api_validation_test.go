@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	databasev1 "github.com/egonlin/api/v1"
@@ -61,6 +62,39 @@ func cleanupMysqlClusterForAdmission(ctx context.Context, cluster *databasev1.My
 	}
 
 	Expect(err).NotTo(HaveOccurred())
+}
+
+func phase5BCandidateSelectedStatusForAdmission(emptyGTID bool) *databasev1.MysqlClusterHAStatus {
+	gtidSet := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:1-10"
+	if emptyGTID {
+		gtidSet = ""
+	}
+	return &databasev1.MysqlClusterHAStatus{
+		State:      databasev1.MysqlClusterHAStateFailoverInProgress,
+		Primary:    "api-election-mysql-1",
+		PrimaryUID: "failed-primary-uid",
+		Failover: &databasev1.MysqlClusterFailoverStatus{
+			Stage:                   databasev1.MysqlClusterFailoverStageCandidateSelected,
+			FailedPrimary:           "api-election-mysql-1",
+			FailedPrimaryUID:        "failed-primary-uid",
+			FenceState:              databasev1.MysqlClusterFenceStateVerified,
+			FenceMethod:             databasev1.MysqlClusterFenceMethodMySQLSuperReadOnly,
+			FencedPrimaryUID:        "failed-primary-uid",
+			Candidate:               "api-election-mysql-2",
+			CandidateUID:            "candidate-uid",
+			FailedPrimaryServerUUID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+			FailedPrimaryGTIDSet:    &gtidSet,
+		},
+	}
+}
+
+func persistHAStatusForAdmission(ctx context.Context, cluster *databasev1.MysqlCluster, status *databasev1.MysqlClusterHAStatus) error {
+	stored := &databasev1.MysqlCluster{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, stored); err != nil {
+		return err
+	}
+	stored.Status.HA = status
+	return k8sClient.Status().Update(ctx, stored)
 }
 
 var _ = Describe("MysqlCluster API admission contract", func() {
@@ -312,6 +346,72 @@ var _ = Describe("MysqlCluster API admission contract", func() {
 
 		err := k8sClient.Create(ctx, cluster)
 
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error: %v", err)
+	})
+
+	It("accepts complete CandidateSelected proof including an authoritative empty GTID set", func() {
+		cluster := validMysqlClusterForAdmission("api-election-empty-gtid")
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupMysqlClusterForAdmission(context.Background(), cluster)
+		})
+
+		Expect(persistHAStatusForAdmission(ctx, cluster, phase5BCandidateSelectedStatusForAdmission(true))).To(Succeed())
+	})
+
+	It("rejects CandidateSelected without complete verified election proof", func() {
+		mutations := []struct {
+			name   string
+			mutate func(*databasev1.MysqlClusterFailoverStatus)
+		}{
+			{name: "verified fence", mutate: func(status *databasev1.MysqlClusterFailoverStatus) {
+				status.FenceState = databasev1.MysqlClusterFenceStatePending
+				status.FencedPrimaryUID = ""
+			}},
+			{name: "matching fenced UID", mutate: func(status *databasev1.MysqlClusterFailoverStatus) { status.FencedPrimaryUID = "other-uid" }},
+			{name: "candidate", mutate: func(status *databasev1.MysqlClusterFailoverStatus) { status.Candidate = "" }},
+			{name: "candidate UID", mutate: func(status *databasev1.MysqlClusterFailoverStatus) { status.CandidateUID = "" }},
+			{name: "failed primary server UUID", mutate: func(status *databasev1.MysqlClusterFailoverStatus) { status.FailedPrimaryServerUUID = "" }},
+			{name: "failed primary GTID presence", mutate: func(status *databasev1.MysqlClusterFailoverStatus) { status.FailedPrimaryGTIDSet = nil }},
+		}
+		for index, mutation := range mutations {
+			cluster := validMysqlClusterForAdmission(fmt.Sprintf("api-election-missing-%d", index))
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			status := phase5BCandidateSelectedStatusForAdmission(false)
+			mutation.mutate(status.Failover)
+			err := persistHAStatusForAdmission(ctx, cluster, status)
+			Expect(err).To(HaveOccurred(), "missing %s was accepted", mutation.name)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error for missing %s: %v", mutation.name, err)
+			cleanupMysqlClusterForAdmission(ctx, cluster)
+		}
+	})
+
+	It("rejects selecting the failed primary identity", func() {
+		cluster := validMysqlClusterForAdmission("api-election-same-primary")
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupMysqlClusterForAdmission(context.Background(), cluster)
+		})
+		status := phase5BCandidateSelectedStatusForAdmission(false)
+		status.Failover.Candidate = status.Failover.FailedPrimary
+		status.Failover.CandidateUID = status.Failover.FailedPrimaryUID
+
+		err := persistHAStatusForAdmission(ctx, cluster, status)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error: %v", err)
+	})
+
+	It("rejects stale candidate-selection proof while Stage is Fencing", func() {
+		cluster := validMysqlClusterForAdmission("api-election-stale-fencing")
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupMysqlClusterForAdmission(context.Background(), cluster)
+		})
+		status := phase5BCandidateSelectedStatusForAdmission(false)
+		status.Failover.Stage = databasev1.MysqlClusterFailoverStageFencing
+
+		err := persistHAStatusForAdmission(ctx, cluster, status)
 		Expect(err).To(HaveOccurred())
 		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error: %v", err)
 	})

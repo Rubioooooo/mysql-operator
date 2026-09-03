@@ -142,8 +142,11 @@ const (
 	MysqlClusterFenceMethodMySQLSuperReadOnly MysqlClusterFenceMethod = "MySQLSuperReadOnly"
 )
 
-// MysqlClusterFailoverStatus records durable failover and fence progress.
+// MysqlClusterFailoverStatus records durable failover, fence, and election progress.
 // +kubebuilder:validation:XValidation:rule="self.fenceState != 'Verified' || (has(self.fencedPrimaryUID) && self.fencedPrimaryUID.size() > 0 && self.fencedPrimaryUID == self.failedPrimaryUID)",message="a verified fence must identify the failed primary UID"
+// +kubebuilder:validation:XValidation:rule="self.stage == 'Fencing' || (self.fenceState == 'Verified' && has(self.fencedPrimaryUID) && self.fencedPrimaryUID == self.failedPrimaryUID && has(self.candidate) && self.candidate.size() > 0 && has(self.candidateUID) && self.candidateUID.size() > 0 && has(self.failedPrimaryServerUUID) && self.failedPrimaryServerUUID.size() > 0 && has(self.failedPrimaryGTIDSet))",message="CandidateSelected and later stages require a verified fence and complete election proof"
+// +kubebuilder:validation:XValidation:rule="self.stage == 'Fencing' || (self.candidate != self.failedPrimary && self.candidateUID != self.failedPrimaryUID)",message="the election candidate must differ from the failed primary identity"
+// +kubebuilder:validation:XValidation:rule="self.stage != 'Fencing' || (!has(self.candidate) && !has(self.candidateUID) && !has(self.failedPrimaryServerUUID) && !has(self.failedPrimaryGTIDSet))",message="Fencing must not carry candidate-selection proof"
 type MysqlClusterFailoverStatus struct {
 	Stage MysqlClusterFailoverStage `json:"stage"`
 
@@ -158,6 +161,24 @@ type MysqlClusterFailoverStatus struct {
 	FenceMethod MysqlClusterFenceMethod `json:"fenceMethod,omitempty"`
 
 	FencedPrimaryUID string `json:"fencedPrimaryUID,omitempty"`
+
+	// Candidate is the canonical StatefulSet Pod selected by GTID-safe election.
+	// +kubebuilder:validation:MinLength=1
+	Candidate string `json:"candidate,omitempty"`
+
+	// CandidateUID binds Candidate to the exact Pod incarnation that was elected.
+	// +kubebuilder:validation:MinLength=1
+	CandidateUID string `json:"candidateUID,omitempty"`
+
+	// FailedPrimaryServerUUID is the freshly observed MySQL server UUID used to
+	// validate each candidate's replication-source identity.
+	// +kubebuilder:validation:MinLength=1
+	FailedPrimaryServerUUID string `json:"failedPrimaryServerUUID,omitempty"`
+
+	// FailedPrimaryGTIDSet is the authoritative fenced-primary GTID set used by
+	// election. Nil means no snapshot was captured; a pointer to "" is a valid
+	// authoritative empty GTID set.
+	FailedPrimaryGTIDSet *string `json:"failedPrimaryGTIDSet,omitempty"`
 }
 
 // MysqlClusterHAStatus records durable primary-failure observations and HA progress.
@@ -178,7 +199,7 @@ type MysqlClusterHAStatus struct {
 	// FirstFailureTime is when the current same-UID failure sequence began.
 	FirstFailureTime *metav1.Time `json:"firstFailureTime,omitempty"`
 
-	// Failover records an active durable failover plan. Phase 5-A advances only Fencing.
+	// Failover records an active durable failover plan.
 	Failover *MysqlClusterFailoverStatus `json:"failover,omitempty"`
 }
 
