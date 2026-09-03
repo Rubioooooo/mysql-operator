@@ -120,27 +120,14 @@ func (r *MysqlClusterReconciler) reconcileMysqlInitializationTopology(
 		if err := r.Get(ctx, slavePodKey, slavePod); err != nil {
 			return false, fmt.Errorf("failed to get initial replica Pod %s: %v", slaveName, err)
 		}
-		observation, err := r.observeMysqlMemberReplication(ctx, slavePod, &cluster)
+		result, err := r.reconcileMysqlReplicaChannel(ctx, slavePod, &cluster)
 		if err != nil {
-			return false, fmt.Errorf("failed to inspect initial replica pod %s: %v", slaveName, err)
+			return false, fmt.Errorf("failed to converge initial replica pod %s: %v", slaveName, err)
 		}
-		if !observation.Channel.Configured {
-			if _, err := r.executeCommandOnPod(slavePod, mysqlInitializeReplicaCommand(cluster.Spec.MasterService)); err != nil {
-				return false, fmt.Errorf("failed to execute command on initial replica pod %s: %v", slaveName, err)
-			}
-			allReplicasHealthy = false
+		if result.Mutated {
 			replicaConfigurationChanged = true
-			continue
 		}
-		if !observation.Channel.configurationMatches(cluster.Spec.MasterService) {
-			if _, err := r.executeCommandOnPod(slavePod, mysqlConfigureReplicaCommand(cluster.Spec.MasterService)); err != nil {
-				return false, fmt.Errorf("failed to reconfigure initial replica pod %s: %v", slaveName, err)
-			}
-			allReplicasHealthy = false
-			replicaConfigurationChanged = true
-			continue
-		}
-		if !observation.Channel.semanticallyHealthy(cluster.Spec.MasterService) {
+		if !result.Converged {
 			allReplicasHealthy = false
 		}
 	}
