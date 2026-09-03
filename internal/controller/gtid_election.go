@@ -479,5 +479,12 @@ func (r *MysqlClusterReconciler) reconcileMysqlCandidateSelected(
 	if err != nil || !matches {
 		return r.invalidateMysqlCandidateSelection(ctx, cluster)
 	}
+
+	desired := cluster.Status.HA.DeepCopy()
+	desired.State = databasev1.MysqlClusterHAStateFailoverInProgress
+	desired.Failover.Stage = databasev1.MysqlClusterFailoverStagePromoting
+	if _, err := r.persistMysqlClusterHAStatus(ctx, cluster, desired); err != nil {
+		return ctrl.Result{}, false, err
+	}
 	return ctrl.Result{RequeueAfter: mysqlHAFailureRequeueAfter}, false, nil
 }

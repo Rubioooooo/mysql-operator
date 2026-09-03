@@ -22,6 +22,10 @@ func (r *MysqlClusterReconciler) reconcileMasterSlave(ctx context.Context, clust
 			return r.reconcileMysqlFailoverFencing(ctx, &cluster)
 		case databasev1.MysqlClusterFailoverStageCandidateSelected:
 			return r.reconcileMysqlCandidateSelected(ctx, &cluster)
+		case databasev1.MysqlClusterFailoverStagePromoting:
+			return r.reconcileMysqlCandidateTakeover(ctx, &cluster)
+		case databasev1.MysqlClusterFailoverStageReconfiguring:
+			return r.reconcileMysqlReconfiguringBarrier(ctx, &cluster)
 		}
 	}
 

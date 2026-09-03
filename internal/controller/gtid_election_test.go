@@ -443,7 +443,7 @@ func phase5BSelectCandidate(t *testing.T, name string) (*databasev1.MysqlCluster
 	return cluster, statefulSet, primary, candidate, plan
 }
 
-func TestPhase5BCandidateSelectedCheckpointIsReadOnlyAndRestartSafe(t *testing.T) {
+func TestPhase5CCandidateSelectedHandoffIsStatusOnlyAndRestartSafe(t *testing.T) {
 	g := NewWithT(t)
 	ctx := context.Background()
 	cluster, statefulSet, primary, candidate, _ := phase5BSelectCandidate(t, "phase5b-checkpoint")
@@ -456,7 +456,7 @@ func TestPhase5BCandidateSelectedCheckpointIsReadOnlyAndRestartSafe(t *testing.T
 	_, _, err := restarted.reconcileMasterSlave(ctx, *cluster)
 	g.Expect(err).NotTo(HaveOccurred())
 	stored := phase4StoredCluster(t, restarted, cluster)
-	g.Expect(stored.Status.HA.Failover.Stage).To(Equal(databasev1.MysqlClusterFailoverStageCandidateSelected))
+	g.Expect(stored.Status.HA.Failover.Stage).To(Equal(databasev1.MysqlClusterFailoverStagePromoting))
 	g.Expect(stored.Status.HA.Failover.Candidate).To(Equal(candidate.Name))
 	g.Expect(plan.quarantineCalls).To(BeEmpty())
 	g.Expect(plan.promotionMutations).To(Equal(0))
