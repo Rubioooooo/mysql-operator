@@ -111,6 +111,9 @@ func (p *phase5CExecPlan) execute(pod *corev1.Pod, command string) (string, erro
 		if pod.Name == p.primaryName {
 			return phase5BElectionReferenceOutput(phase5BPrimaryServerUUID, phase5CGTIDSet), nil
 		}
+		if pod.Name == p.candidateName && p.primaryFenced {
+			return phase5BElectionReferenceOutput("bbbbbbbb-cccc-dddd-eeee-ffffffffffff", phase5CGTIDSet), nil
+		}
 	case mysqlSourceCapabilityCommand():
 		return phase5CBoolean(p.candidateSource) + "\t" + phase5CBoolean(p.candidateSource) + "\n", nil
 	case mysqlShowSlaveStatusCommand():
@@ -147,6 +150,8 @@ func phase5CTakeoverFixture(
 ) (*databasev1.MysqlCluster, *appsv1.StatefulSet, *corev1.Pod, *corev1.Pod, *phase5CExecPlan) {
 	t.Helper()
 	cluster, statefulSet, primary, replicas := phase5BFixture(t, name, 2)
+	desiredReplicas := int32(2)
+	cluster.Spec.Replicas = &desiredReplicas
 	candidate := replicas[0]
 	cluster.Status.HA.Failover.Stage = stage
 	cluster.Status.HA.Failover.Candidate = candidate.Name
@@ -154,6 +159,10 @@ func phase5CTakeoverFixture(
 	cluster.Status.HA.Failover.FailedPrimaryServerUUID = phase5BPrimaryServerUUID
 	gtidSet := phase5CGTIDSet
 	cluster.Status.HA.Failover.FailedPrimaryGTIDSet = &gtidSet
+	if stage == databasev1.MysqlClusterFailoverStageReconfiguring {
+		cluster.Status.HA.Primary = candidate.Name
+		cluster.Status.HA.PrimaryUID = string(candidate.UID)
+	}
 	plan := newPhase5CExecPlan(cluster, primary, candidate)
 	return cluster, statefulSet, primary, candidate, plan
 }

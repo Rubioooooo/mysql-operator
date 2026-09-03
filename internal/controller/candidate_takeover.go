@@ -402,21 +402,5 @@ func (r *MysqlClusterReconciler) reconcileMysqlReconfiguringBarrier(
 	ctx context.Context,
 	cluster *databasev1.MysqlCluster,
 ) (ctrl.Result, bool, error) {
-	if err := validateMysqlTakeoverStatus(cluster, databasev1.MysqlClusterFailoverStageReconfiguring); err != nil {
-		return ctrl.Result{}, false, err
-	}
-	candidate, err := r.observeMysqlPublishedTakeoverSafety(ctx, cluster)
-	if err == nil {
-		return mysqlTakeoverBarrierResult()
-	}
-	if candidate.Pod == nil {
-		return mysqlTakeoverBarrierResult()
-	}
-	if candidate.WriteSafety.WriteRole == mysqlWriteRoleWritable {
-		return r.refenceMysqlTakeoverCandidate(ctx, cluster)
-	}
-	if candidate.Role == mysqlPublishedRoleMaster {
-		return r.quarantinePublishedTakeoverCandidate(ctx, cluster)
-	}
-	return mysqlTakeoverBarrierResult()
+	return r.reconcileMysqlReconfiguringReplicas(ctx, cluster)
 }
