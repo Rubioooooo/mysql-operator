@@ -16,6 +16,12 @@ import (
 // 主从调谐逻辑. The bool reports only whether the replica database
 // domain is semantically converged; a successfully handled HA path returns false.
 func (r *MysqlClusterReconciler) reconcileMasterSlave(ctx context.Context, cluster databasev1.MysqlCluster) (ctrl.Result, bool, error) {
+	if cluster.Status.HA != nil &&
+		cluster.Status.HA.Failover != nil &&
+		cluster.Status.HA.Failover.Stage == databasev1.MysqlClusterFailoverStageFencing {
+		return r.reconcileMysqlFailoverFencing(ctx, &cluster)
+	}
+
 	observation, err := r.observeMysqlPrimaryFailure(ctx, &cluster)
 	if err != nil {
 		return ctrl.Result{}, false, err
@@ -127,27 +133,15 @@ func (r *MysqlClusterReconciler) executePersistedMysqlFailover(
 
 	inProgress := cluster.Status.HA.DeepCopy()
 	inProgress.State = databasev1.MysqlClusterHAStateFailoverInProgress
+	inProgress.Failover = &databasev1.MysqlClusterFailoverStatus{
+		Stage:            databasev1.MysqlClusterFailoverStageFencing,
+		FailedPrimary:    observation.PrimaryName,
+		FailedPrimaryUID: observation.PrimaryUID,
+		FenceState:       databasev1.MysqlClusterFenceStatePending,
+		FenceMethod:      databasev1.MysqlClusterFenceMethodMySQLSuperReadOnly,
+		FencedPrimaryUID: "",
+	}
 	if _, err := r.persistMysqlClusterHAStatus(ctx, cluster, inProgress); err != nil {
-		return ctrl.Result{}, false, err
-	}
-	if err := r.revalidateMysqlHAFailureIdentity(ctx, cluster, observation); err != nil {
-		return ctrl.Result{}, false, err
-	}
-
-	if err := r.handleMasterFailure(ctx, *cluster); err != nil {
-		return ctrl.Result{}, false, err
-	}
-
-	newPrimary, err := r.observeSinglePublishedPrimary(ctx, cluster)
-	if err != nil {
-		return ctrl.Result{}, false, err
-	}
-	verifying := &databasev1.MysqlClusterHAStatus{
-		State:      databasev1.MysqlClusterHAStateVerifying,
-		Primary:    newPrimary.Name,
-		PrimaryUID: string(newPrimary.UID),
-	}
-	if _, err := r.persistMysqlClusterHAStatus(ctx, cluster, verifying); err != nil {
 		return ctrl.Result{}, false, err
 	}
 	return ctrl.Result{RequeueAfter: mysqlHAFailureRequeueAfter}, false, nil

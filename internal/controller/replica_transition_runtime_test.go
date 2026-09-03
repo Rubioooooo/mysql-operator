@@ -322,8 +322,10 @@ func TestPhase2B2ScaleUpDeltaGate(t *testing.T) {
 			}
 			current = phase2B2StoredCluster(t, reconciler, cluster)
 		}
-		g.Expect(promoted).To(Equal(newReplica.Name))
-		g.Expect(phase2B2StoredCluster(t, reconciler, cluster).Status.ReplicaTransition).NotTo(BeNil())
+		g.Expect(promoted).To(BeEmpty())
+		stored := phase2B2StoredCluster(t, reconciler, cluster)
+		g.Expect(stored.Status.ReplicaTransition).NotTo(BeNil())
+		g.Expect(stored.Status.HA.Failover).To(Equal(phase5FencingHA(primary, databasev1.MysqlClusterFenceStatePending).Failover))
 	})
 
 	t.Run("Ready new member does not globally gate an established NotReady replica", func(t *testing.T) {
@@ -498,8 +500,10 @@ func TestPhase2B2ScaleDownDeltaGate(t *testing.T) {
 			}
 			current = phase2B2StoredCluster(t, reconciler, cluster)
 		}
-		g.Expect(promoted).To(BeTrue())
-		g.Expect(phase2B2StoredCluster(t, reconciler, cluster).Status.ReplicaTransition).NotTo(BeNil())
+		g.Expect(promoted).To(BeFalse())
+		stored := phase2B2StoredCluster(t, reconciler, cluster)
+		g.Expect(stored.Status.ReplicaTransition).NotTo(BeNil())
+		g.Expect(stored.Status.HA.Failover).To(Equal(phase5FencingHA(oldPrimary, databasev1.MysqlClusterFenceStatePending).Failover))
 	})
 
 	t.Run("scale-down that would remove the primary is rejected before mutation", func(t *testing.T) {
@@ -669,10 +673,11 @@ func TestPhase2B2LegacyBootstrapDoesNotSuppressHA(t *testing.T) {
 		stored = phase2B2StoredCluster(t, reconciler, cluster)
 	}
 	g.Expect(complete).To(BeFalse())
-	g.Expect(execCalls).To(BeNumerically(">", 0))
+	g.Expect(execCalls).To(Equal(0))
+	g.Expect(stored.Status.HA.Failover).To(Equal(phase5FencingHA(oldPrimary, databasev1.MysqlClusterFenceStatePending).Failover))
 	storedReplica3 := &corev1.Pod{}
 	g.Expect(reconciler.Get(ctx, client.ObjectKeyFromObject(replica3), storedReplica3)).To(Succeed())
-	g.Expect(storedReplica3.Labels).To(HaveKeyWithValue(LabelMysqlRole, "master"))
+	g.Expect(storedReplica3.Labels).To(HaveKeyWithValue(LabelMysqlRole, "slave"))
 }
 
 func TestPhase2B2OrdinalIdentityFailsClosed(t *testing.T) {

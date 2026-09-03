@@ -113,6 +113,53 @@ const (
 	MysqlClusterHAStateDegraded           MysqlClusterHAState = "Degraded"
 )
 
+// MysqlClusterFailoverStage describes the durable stage of an active failover.
+// +kubebuilder:validation:Enum=Fencing;CandidateSelected;Promoting;Reconfiguring
+type MysqlClusterFailoverStage string
+
+const (
+	MysqlClusterFailoverStageFencing           MysqlClusterFailoverStage = "Fencing"
+	MysqlClusterFailoverStageCandidateSelected MysqlClusterFailoverStage = "CandidateSelected"
+	MysqlClusterFailoverStagePromoting         MysqlClusterFailoverStage = "Promoting"
+	MysqlClusterFailoverStageReconfiguring     MysqlClusterFailoverStage = "Reconfiguring"
+)
+
+// MysqlClusterFenceState describes the durable state of failed-primary fencing.
+// +kubebuilder:validation:Enum=Pending;Verified;Blocked
+type MysqlClusterFenceState string
+
+const (
+	MysqlClusterFenceStatePending  MysqlClusterFenceState = "Pending"
+	MysqlClusterFenceStateVerified MysqlClusterFenceState = "Verified"
+	MysqlClusterFenceStateBlocked  MysqlClusterFenceState = "Blocked"
+)
+
+// MysqlClusterFenceMethod identifies the authority used to fence writes.
+// +kubebuilder:validation:Enum=MySQLSuperReadOnly
+type MysqlClusterFenceMethod string
+
+const (
+	MysqlClusterFenceMethodMySQLSuperReadOnly MysqlClusterFenceMethod = "MySQLSuperReadOnly"
+)
+
+// MysqlClusterFailoverStatus records durable failover and fence progress.
+// +kubebuilder:validation:XValidation:rule="self.fenceState != 'Verified' || (has(self.fencedPrimaryUID) && self.fencedPrimaryUID.size() > 0 && self.fencedPrimaryUID == self.failedPrimaryUID)",message="a verified fence must identify the failed primary UID"
+type MysqlClusterFailoverStatus struct {
+	Stage MysqlClusterFailoverStage `json:"stage"`
+
+	// +kubebuilder:validation:MinLength=1
+	FailedPrimary string `json:"failedPrimary"`
+
+	// +kubebuilder:validation:MinLength=1
+	FailedPrimaryUID string `json:"failedPrimaryUID"`
+
+	FenceState MysqlClusterFenceState `json:"fenceState"`
+
+	FenceMethod MysqlClusterFenceMethod `json:"fenceMethod,omitempty"`
+
+	FencedPrimaryUID string `json:"fencedPrimaryUID,omitempty"`
+}
+
 // MysqlClusterHAStatus records durable primary-failure observations and HA progress.
 type MysqlClusterHAStatus struct {
 	// State is the current durable HA state.
@@ -130,6 +177,9 @@ type MysqlClusterHAStatus struct {
 
 	// FirstFailureTime is when the current same-UID failure sequence began.
 	FirstFailureTime *metav1.Time `json:"firstFailureTime,omitempty"`
+
+	// Failover records an active durable failover plan. Phase 5-A advances only Fencing.
+	Failover *MysqlClusterFailoverStatus `json:"failover,omitempty"`
 }
 
 // MysqlClusterStatus defines the observed state of MysqlCluster.

@@ -282,6 +282,52 @@ spec:
                 description: HA records durable primary-failure observations and failover
                   progress.
                 properties:
+                  failover:
+                    description: Failover records an active durable failover plan.
+                      Phase 5-A advances only Fencing.
+                    properties:
+                      failedPrimary:
+                        minLength: 1
+                        type: string
+                      failedPrimaryUID:
+                        minLength: 1
+                        type: string
+                      fenceMethod:
+                        description: MysqlClusterFenceMethod identifies the authority
+                          used to fence writes.
+                        enum:
+                        - MySQLSuperReadOnly
+                        type: string
+                      fenceState:
+                        description: MysqlClusterFenceState describes the durable
+                          state of failed-primary fencing.
+                        enum:
+                        - Pending
+                        - Verified
+                        - Blocked
+                        type: string
+                      fencedPrimaryUID:
+                        type: string
+                      stage:
+                        description: MysqlClusterFailoverStage describes the durable
+                          stage of an active failover.
+                        enum:
+                        - Fencing
+                        - CandidateSelected
+                        - Promoting
+                        - Reconfiguring
+                        type: string
+                    required:
+                    - failedPrimary
+                    - failedPrimaryUID
+                    - fenceState
+                    - stage
+                    type: object
+                    x-kubernetes-validations:
+                    - message: a verified fence must identify the failed primary UID
+                      rule: self.fenceState != 'Verified' || (has(self.fencedPrimaryUID)
+                        && self.fencedPrimaryUID.size() > 0 && self.fencedPrimaryUID
+                        == self.failedPrimaryUID)
                   failureCount:
                     description: FailureCount is the number of consecutive failure
                       observations for PrimaryUID.

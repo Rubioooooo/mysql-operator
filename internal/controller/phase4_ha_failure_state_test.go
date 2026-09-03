@@ -284,13 +284,13 @@ func TestPhase4HAMutationBarrierAndVerifying(t *testing.T) {
 
 	_, _, err = reconciler.reconcileMasterSlave(ctx, *required)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(execCalls).To(BeNumerically(">", 0))
-	g.Expect(promotionCalls).To(Equal(1))
-	verifying := phase4StoredCluster(t, reconciler, cluster)
-	g.Expect(verifying.Status.HA.State).To(Equal(databasev1.MysqlClusterHAStateVerifying))
-	g.Expect(verifying.Status.HA.Primary).To(Equal(replica3.Name))
-	g.Expect(verifying.Status.HA.PrimaryUID).To(Equal(string(replica3.UID)))
-	g.Expect(verifying.Status.HA.State).NotTo(Equal(databasev1.MysqlClusterHAStateHealthy))
+	g.Expect(execCalls).To(Equal(0), "failover entry must persist the Phase 5-A fence plan before any SQL")
+	g.Expect(promotionCalls).To(Equal(0))
+	inProgress := phase4StoredCluster(t, reconciler, cluster)
+	g.Expect(inProgress.Status.HA.State).To(Equal(databasev1.MysqlClusterHAStateFailoverInProgress))
+	g.Expect(inProgress.Status.HA.Primary).To(Equal(oldPrimary.Name))
+	g.Expect(inProgress.Status.HA.PrimaryUID).To(Equal(string(oldPrimary.UID)))
+	g.Expect(inProgress.Status.HA.Failover).To(Equal(phase5FencingHA(oldPrimary, databasev1.MysqlClusterFenceStatePending).Failover))
 }
 
 func TestPhase4HAVerifyingSemanticWait(t *testing.T) {

@@ -3,7 +3,6 @@ package controller
 import (
 	"context" // 用于处理上下文，提供超时、取消等操作
 	"fmt"     // 格式化I/O函数，如字符串格式化和打印
-	"os"
 	"strings"
 
 	"k8s.io/client-go/kubernetes"
@@ -22,6 +21,19 @@ const (
 	mysqlReplicationPasswordSQLAssignment = `replication_password_sql=$(printf '%s' "$MYSQL_REPLICATION_PASSWORD" | sed "s/\\\\/\\\\\\\\/g; s/'/''/g")`
 	mysqlReplicationMasterHostMaxBytes    = 60
 )
+
+type mysqlPodCommandExecutionError struct {
+	cause  error
+	stderr string
+}
+
+func (e *mysqlPodCommandExecutionError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *mysqlPodCommandExecutionError) Unwrap() error {
+	return e.cause
+}
 
 func mysqlPreparePrimaryCommand() string {
 	return mysqlReplicationPasswordSQLAssignment + `; ` + mysqlRootClientCommand +
@@ -310,12 +322,13 @@ func (r *MysqlClusterReconciler) execCommandOnPod(pod *v1.Pod, command string) (
 
 	// Execute the command
 	var output strings.Builder
+	var stderr strings.Builder
 	err = executor.Stream(remotecommand.StreamOptions{
 		Stdout: &output,
-		Stderr: os.Stderr,
+		Stderr: &stderr,
 	})
 	if err != nil {
-		return "", err
+		return "", &mysqlPodCommandExecutionError{cause: err, stderr: stderr.String()}
 	}
 
 	return output.String(), nil

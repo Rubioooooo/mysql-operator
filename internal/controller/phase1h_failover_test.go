@@ -104,7 +104,7 @@ func TestPhase1HRuntimeReadinessGates(t *testing.T) {
 	})
 
 	for _, primaryState := range []string{"not-ready", "missing"} {
-		t.Run("initialized runtime reaches election when primary is "+primaryState, func(t *testing.T) {
+		t.Run("initialized runtime enters durable fencing when primary is "+primaryState, func(t *testing.T) {
 			g := NewWithT(t)
 			cluster := phase1HCluster("phase1h-runtime-"+primaryState, true)
 			statefulSet := phase1HStatefulSet(t, cluster)
@@ -159,24 +159,18 @@ func TestPhase1HRuntimeReadinessGates(t *testing.T) {
 				}
 			}
 			g.Expect(complete).To(BeFalse())
-			g.Expect(promotedPod).To(Equal(replica3.Name))
-			g.Expect(phase4StoredCluster(t, reconciler, cluster).Status.HA.State).To(Equal(databasev1.MysqlClusterHAStateVerifying))
+			g.Expect(promotedPod).To(BeEmpty())
+			storedCluster := phase4StoredCluster(t, reconciler, cluster)
+			g.Expect(storedCluster.Status.HA.State).To(Equal(databasev1.MysqlClusterHAStateFailoverInProgress))
+			g.Expect(storedCluster.Status.HA.Failover).To(Equal(phase5FencingHA(oldPrimary, databasev1.MysqlClusterFenceStatePending).Failover))
 			storedReplica3 := &corev1.Pod{}
 			g.Expect(reconciler.Get(ctx, client.ObjectKeyFromObject(replica3), storedReplica3)).To(Succeed())
-			g.Expect(storedReplica3.Labels).To(HaveKeyWithValue(LabelMysqlRole, "master"))
+			g.Expect(storedReplica3.Labels).To(HaveKeyWithValue(LabelMysqlRole, "slave"))
 			if primaryState == "not-ready" {
 				storedOldPrimary := &corev1.Pod{}
 				g.Expect(reconciler.Get(ctx, client.ObjectKeyFromObject(oldPrimary), storedOldPrimary)).To(Succeed())
-				g.Expect(storedOldPrimary.Labels).To(HaveKeyWithValue(LabelMysqlRole, "slave"))
-				g.Expect(storedOldPrimary.Labels).To(HaveKeyWithValue(LegacyLabelRole, "slave"))
-
-				slavePods := &corev1.PodList{}
-				g.Expect(reconciler.List(ctx, slavePods, mysqlClusterPodListOptions(cluster, "slave")...)).To(Succeed())
-				slaveNames := make([]string, 0, len(slavePods.Items))
-				for i := range slavePods.Items {
-					slaveNames = append(slaveNames, slavePods.Items[i].Name)
-				}
-				g.Expect(slaveNames).To(ContainElement(oldPrimary.Name))
+				g.Expect(storedOldPrimary.Labels).To(HaveKeyWithValue(LabelMysqlRole, "master"))
+				g.Expect(storedOldPrimary.Labels).To(HaveKeyWithValue(LegacyLabelRole, "master"))
 			}
 		})
 	}
