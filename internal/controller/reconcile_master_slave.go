@@ -26,6 +26,11 @@ func (r *MysqlClusterReconciler) reconcileMasterSlave(ctx context.Context, clust
 			return r.reconcileMysqlCandidateTakeover(ctx, &cluster)
 		case databasev1.MysqlClusterFailoverStageReconfiguring:
 			return r.reconcileMysqlReconfiguringBarrier(ctx, &cluster)
+		default:
+			return ctrl.Result{}, false, fmt.Errorf(
+				"unsupported durable MySQL failover stage %q",
+				cluster.Status.HA.Failover.Stage,
+			)
 		}
 	}
 
