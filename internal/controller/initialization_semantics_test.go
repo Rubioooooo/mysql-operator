@@ -208,7 +208,7 @@ func TestParseMysqlShowSlaveStatus(t *testing.T) {
 		"",
 	))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(status).NotTo(BeNil())
+	g.Expect(status.Configured).To(BeTrue())
 	g.Expect(status.MasterHost).To(Equal("mysql-primary"))
 	g.Expect(status.MasterUser).To(Equal("replica"))
 	g.Expect(status.AutoPosition).To(Equal("1"))

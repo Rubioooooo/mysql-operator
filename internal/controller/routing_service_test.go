@@ -309,7 +309,15 @@ func TestInitializationTopologyPublicationOrdering(t *testing.T) {
 				case pod.Name == primary.Name && command == mysqlPreparePrimaryCommand():
 					return "", nil
 				case pod.Name == replica.Name && command == mysqlShowSlaveStatusCommand():
-					return "*************************** 1. row ***************************", nil
+					return mysqlSlaveStatusOutputForTest(
+						"previous-primary",
+						"replica",
+						"1",
+						"Yes",
+						"Yes",
+						"",
+						"",
+					), nil
 				case pod.Name == replica.Name:
 					retryCommand = command
 					return "", nil

@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"bufio"
 	"context" // 用于处理上下文，提供超时、取消等操作
 	"fmt"     // 格式化I/O函数，如字符串格式化和打印
 	"os"
@@ -65,16 +64,6 @@ func (r *MysqlClusterReconciler) setupMasterSlaveReplication(ctx context.Context
 	return r.setupMysqlReplicas(ctx, slaveNames, cluster)
 }
 
-type mysqlSlaveReplicationStatus struct {
-	MasterHost      string
-	MasterUser      string
-	AutoPosition    string
-	SlaveIORunning  string
-	SlaveSQLRunning string
-	LastIOError     string
-	LastSQLError    string
-}
-
 func validateMysqlReplicationMasterHost(cluster *databasev1.MysqlCluster) error {
 	if len(cluster.Spec.MasterService) <= mysqlReplicationMasterHostMaxBytes {
 		return nil
@@ -88,72 +77,12 @@ func validateMysqlReplicationMasterHost(cluster *databasev1.MysqlCluster) error 
 	)
 }
 
-func parseMysqlShowSlaveStatus(output string) (*mysqlSlaveReplicationStatus, error) {
-	if strings.TrimSpace(output) == "" {
-		return nil, nil
-	}
-
-	fields := make(map[string]string)
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "***") {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		fields[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("failed to parse SHOW SLAVE STATUS output: %w", err)
-	}
-
-	return &mysqlSlaveReplicationStatus{
-		MasterHost:      fields["Master_Host"],
-		MasterUser:      fields["Master_User"],
-		AutoPosition:    fields["Auto_Position"],
-		SlaveIORunning:  fields["Slave_IO_Running"],
-		SlaveSQLRunning: fields["Slave_SQL_Running"],
-		LastIOError:     fields["Last_IO_Error"],
-		LastSQLError:    fields["Last_SQL_Error"],
-	}, nil
-}
-
-func (status *mysqlSlaveReplicationStatus) configurationMatches(masterHost string) bool {
-	return status != nil &&
-		status.MasterHost == masterHost &&
-		status.MasterUser == "replica" &&
-		status.AutoPosition == "1"
-}
-
-func (status *mysqlSlaveReplicationStatus) semanticallyHealthy(masterHost string) bool {
-	return status.configurationMatches(masterHost) &&
-		status.SlaveIORunning == "Yes" &&
-		status.SlaveSQLRunning == "Yes" &&
-		status.LastIOError == "" &&
-		status.LastSQLError == ""
-}
-
 func mysqlPodHasPublishedRole(pod *v1.Pod, expectedRole string) (bool, error) {
-	canonicalRole := pod.Labels[LabelMysqlRole]
-	legacyRole := pod.Labels[LegacyLabelRole]
-	if canonicalRole == "" && legacyRole == "" {
-		return false, nil
+	publishedRole, err := observeMysqlPublishedRole(pod)
+	if err != nil {
+		return false, err
 	}
-	if canonicalRole == "" || legacyRole == "" || canonicalRole != legacyRole {
-		return false, fmt.Errorf(
-			"Pod %s/%s has inconsistent MySQL role labels: %s=%q, %s=%q",
-			pod.Namespace,
-			pod.Name,
-			LabelMysqlRole,
-			canonicalRole,
-			LegacyLabelRole,
-			legacyRole,
-		)
-	}
-	return canonicalRole == expectedRole, nil
+	return publishedRole == mysqlPublishedRole(expectedRole), nil
 }
 
 // reconcileMysqlInitializationTopology advances exactly one initialization
@@ -191,19 +120,11 @@ func (r *MysqlClusterReconciler) reconcileMysqlInitializationTopology(
 		if err := r.Get(ctx, slavePodKey, slavePod); err != nil {
 			return false, fmt.Errorf("failed to get initial replica Pod %s: %v", slaveName, err)
 		}
-		if err := r.validateMysqlPodBeforeSQL(ctx, slavePod, &cluster, "initial replica status SQL"); err != nil {
-			return false, err
-		}
-
-		slaveStatus, err := r.executeCommandOnPod(slavePod, mysqlShowSlaveStatusCommand())
+		observation, err := r.observeMysqlMemberReplication(ctx, slavePod, &cluster)
 		if err != nil {
 			return false, fmt.Errorf("failed to inspect initial replica pod %s: %v", slaveName, err)
 		}
-		status, err := parseMysqlShowSlaveStatus(slaveStatus)
-		if err != nil {
-			return false, fmt.Errorf("failed to inspect initial replica pod %s: %v", slaveName, err)
-		}
-		if status == nil {
+		if !observation.Channel.Configured {
 			if _, err := r.executeCommandOnPod(slavePod, mysqlInitializeReplicaCommand(cluster.Spec.MasterService)); err != nil {
 				return false, fmt.Errorf("failed to execute command on initial replica pod %s: %v", slaveName, err)
 			}
@@ -211,7 +132,7 @@ func (r *MysqlClusterReconciler) reconcileMysqlInitializationTopology(
 			replicaConfigurationChanged = true
 			continue
 		}
-		if !status.configurationMatches(cluster.Spec.MasterService) {
+		if !observation.Channel.configurationMatches(cluster.Spec.MasterService) {
 			if _, err := r.executeCommandOnPod(slavePod, mysqlConfigureReplicaCommand(cluster.Spec.MasterService)); err != nil {
 				return false, fmt.Errorf("failed to reconfigure initial replica pod %s: %v", slaveName, err)
 			}
@@ -219,7 +140,7 @@ func (r *MysqlClusterReconciler) reconcileMysqlInitializationTopology(
 			replicaConfigurationChanged = true
 			continue
 		}
-		if !status.semanticallyHealthy(cluster.Spec.MasterService) {
+		if !observation.Channel.semanticallyHealthy(cluster.Spec.MasterService) {
 			allReplicasHealthy = false
 		}
 	}
