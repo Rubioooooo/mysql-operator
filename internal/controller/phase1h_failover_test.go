@@ -45,6 +45,7 @@ func phase1HPod(
 ) *corev1.Pod {
 	t.Helper()
 	pod := statefulSetPodForLifecycleTest(t, cluster, statefulSet, ordinal)
+	pod.UID = types.UID(fmt.Sprintf("%s-pod-%d-uid", cluster.Name, ordinal))
 	pod.Labels[LabelMysqlRole] = role
 	pod.Labels[LegacyLabelRole] = role
 	for i := range pod.Status.ContainerStatuses {
@@ -109,11 +110,12 @@ func TestPhase1HRuntimeReadinessGates(t *testing.T) {
 			statefulSet := phase1HStatefulSet(t, cluster)
 			replica2 := phase1HPod(t, cluster, statefulSet, 2, "slave", true)
 			replica3 := phase1HPod(t, cluster, statefulSet, 3, "slave", true)
-			objects := []client.Object{statefulSet, phase1HCredentialSecret(cluster), replica2, replica3, phase1HEndpoints(cluster, nil)}
-			var oldPrimary *corev1.Pod
+			oldPrimary := phase1HPod(t, cluster, statefulSet, 1, "master", false)
+			objects := []client.Object{cluster, statefulSet, phase1HCredentialSecret(cluster), replica2, replica3, phase1HEndpoints(cluster, nil)}
 			if primaryState == "not-ready" {
-				oldPrimary = phase1HPod(t, cluster, statefulSet, 1, "master", false)
 				objects = append(objects, oldPrimary)
+			} else {
+				cluster.Status.HA = phase4HAStatus(databasev1.MysqlClusterHAStateHealthy, oldPrimary)
 			}
 			reconciler := phase1HReconciler(t, objects...)
 			reconciler.MasterGTIDSnapshot = "uuid:1-10"
@@ -140,14 +142,29 @@ func TestPhase1HRuntimeReadinessGates(t *testing.T) {
 				}
 			}
 
-			_, complete, err := reconciler.reconcileStatefulSetRuntime(ctx, cluster)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(complete).To(BeTrue())
+			confirmationReconciles := 2
+			if primaryState == "not-ready" {
+				confirmationReconciles = 3
+			}
+			var (
+				complete bool
+				err      error
+			)
+			for reconcileIndex := 0; reconcileIndex < confirmationReconciles; reconcileIndex++ {
+				current := phase4StoredCluster(t, reconciler, cluster)
+				_, complete, err = reconciler.reconcileStatefulSetRuntime(ctx, current)
+				g.Expect(err).NotTo(HaveOccurred())
+				if reconcileIndex < confirmationReconciles-1 {
+					g.Expect(promotedPod).To(BeEmpty())
+				}
+			}
+			g.Expect(complete).To(BeFalse())
 			g.Expect(promotedPod).To(Equal(replica3.Name))
+			g.Expect(phase4StoredCluster(t, reconciler, cluster).Status.HA.State).To(Equal(databasev1.MysqlClusterHAStateVerifying))
 			storedReplica3 := &corev1.Pod{}
 			g.Expect(reconciler.Get(ctx, client.ObjectKeyFromObject(replica3), storedReplica3)).To(Succeed())
 			g.Expect(storedReplica3.Labels).To(HaveKeyWithValue(LabelMysqlRole, "master"))
-			if oldPrimary != nil {
+			if primaryState == "not-ready" {
 				storedOldPrimary := &corev1.Pod{}
 				g.Expect(reconciler.Get(ctx, client.ObjectKeyFromObject(oldPrimary), storedOldPrimary)).To(Succeed())
 				g.Expect(storedOldPrimary.Labels).To(HaveKeyWithValue(LabelMysqlRole, "slave"))
@@ -171,8 +188,10 @@ func TestPhase1HRuntimeReadinessGates(t *testing.T) {
 		primary := phase1HPod(t, cluster, statefulSet, 1, "master", true)
 		replica2 := phase1HPod(t, cluster, statefulSet, 2, "slave", false)
 		replica3 := phase1HPod(t, cluster, statefulSet, 3, "slave", true)
+		cluster.Status.HA = phase4HAStatus(databasev1.MysqlClusterHAStateHealthy, primary)
 		reconciler := phase1HReconciler(
 			t,
+			cluster,
 			statefulSet,
 			phase1HCredentialSecret(cluster),
 			primary,

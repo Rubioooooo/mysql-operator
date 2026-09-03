@@ -101,6 +101,37 @@ type MysqlClusterReplicaTransitionStatus struct {
 	TargetReplicas int32 `json:"targetReplicas"`
 }
 
+// MysqlClusterHAState describes the durable high-availability state machine.
+type MysqlClusterHAState string
+
+const (
+	MysqlClusterHAStateHealthy            MysqlClusterHAState = "Healthy"
+	MysqlClusterHAStateSuspected          MysqlClusterHAState = "Suspected"
+	MysqlClusterHAStateFailoverRequired   MysqlClusterHAState = "FailoverRequired"
+	MysqlClusterHAStateFailoverInProgress MysqlClusterHAState = "FailoverInProgress"
+	MysqlClusterHAStateVerifying          MysqlClusterHAState = "Verifying"
+	MysqlClusterHAStateDegraded           MysqlClusterHAState = "Degraded"
+)
+
+// MysqlClusterHAStatus records durable primary-failure observations and HA progress.
+type MysqlClusterHAStatus struct {
+	// State is the current durable HA state.
+	// +kubebuilder:validation:Enum=Healthy;Suspected;FailoverRequired;FailoverInProgress;Verifying;Degraded
+	State MysqlClusterHAState `json:"state"`
+
+	// Primary is the observed primary Pod name associated with this HA decision.
+	Primary string `json:"primary"`
+
+	// PrimaryUID is the observed primary Pod UID associated with this HA decision.
+	PrimaryUID string `json:"primaryUID"`
+
+	// FailureCount is the number of consecutive failure observations for PrimaryUID.
+	FailureCount int32 `json:"failureCount"`
+
+	// FirstFailureTime is when the current same-UID failure sequence began.
+	FirstFailureTime *metav1.Time `json:"firstFailureTime,omitempty"`
+}
+
 // MysqlClusterStatus defines the observed state of MysqlCluster.
 //
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.credentialsSecretUID) || (has(self.credentialsSecretUID) && self.credentialsSecretUID == oldSelf.credentialsSecretUID)",message="credentialsSecretUID is write-once and cannot be changed or cleared"
@@ -128,6 +159,9 @@ type MysqlClusterStatus struct {
 	// ReplicaTransition records an active replica-count transition. Nil means no
 	// replica-count transition is currently recorded.
 	ReplicaTransition *MysqlClusterReplicaTransitionStatus `json:"replicaTransition,omitempty"`
+
+	// HA records durable primary-failure observations and failover progress.
+	HA *MysqlClusterHAStatus `json:"ha,omitempty"`
 
 	// CredentialsSecretUID is the UID of the immutable external credential
 	// Secret accepted for this MysqlCluster lifecycle.

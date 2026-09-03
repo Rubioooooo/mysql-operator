@@ -278,6 +278,44 @@ spec:
                   observed.
                 format: int32
                 type: integer
+              ha:
+                description: HA records durable primary-failure observations and failover
+                  progress.
+                properties:
+                  failureCount:
+                    description: FailureCount is the number of consecutive failure
+                      observations for PrimaryUID.
+                    format: int32
+                    type: integer
+                  firstFailureTime:
+                    description: FirstFailureTime is when the current same-UID failure
+                      sequence began.
+                    format: date-time
+                    type: string
+                  primary:
+                    description: Primary is the observed primary Pod name associated
+                      with this HA decision.
+                    type: string
+                  primaryUID:
+                    description: PrimaryUID is the observed primary Pod UID associated
+                      with this HA decision.
+                    type: string
+                  state:
+                    description: State is the current durable HA state.
+                    enum:
+                    - Healthy
+                    - Suspected
+                    - FailoverRequired
+                    - FailoverInProgress
+                    - Verifying
+                    - Degraded
+                    type: string
+                required:
+                - failureCount
+                - primary
+                - primaryUID
+                - state
+                type: object
               lastConvergedReplicas:
                 description: |-
                   LastConvergedReplicas is the replica count of the most recently completed

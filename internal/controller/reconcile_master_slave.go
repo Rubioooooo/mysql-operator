@@ -16,39 +16,141 @@ import (
 // 主从调谐逻辑. The bool reports only whether the replica database
 // domain is semantically converged; a successfully handled HA path returns false.
 func (r *MysqlClusterReconciler) reconcileMasterSlave(ctx context.Context, cluster databasev1.MysqlCluster) (ctrl.Result, bool, error) {
-	// 检查主库状态
-	masterAlive, err := r.checkMasterStatus(ctx, cluster)
+	observation, err := r.observeMysqlPrimaryFailure(ctx, &cluster)
 	if err != nil {
-		// 如果检查主库状态时出现错误，则返回错误并重新排队调谐
 		return ctrl.Result{}, false, err
 	}
 
-	if !masterAlive {
-		// 主库挂掉的情况处理
-		if err := r.handleMasterFailure(ctx, cluster); err != nil {
-			// 如果处理主库故障时出现错误，则返回错误并重新排队调谐
+	current := cluster.Status.HA
+	switch observation.Classification {
+	case mysqlPrimaryHealthy:
+		if current != nil {
+			switch current.State {
+			case databasev1.MysqlClusterHAStateVerifying:
+				if !mysqlHAIdentityMatches(current, observation) {
+					verifying := &databasev1.MysqlClusterHAStatus{
+						State:      databasev1.MysqlClusterHAStateVerifying,
+						Primary:    observation.PrimaryName,
+						PrimaryUID: observation.PrimaryUID,
+					}
+					if _, err := r.persistMysqlClusterHAStatus(ctx, &cluster, verifying); err != nil {
+						return ctrl.Result{}, false, err
+					}
+					return ctrl.Result{RequeueAfter: mysqlHAFailureRequeueAfter}, false, nil
+				}
+
+				result, converged, err := r.reconcileMysqlHealthyPrimaryRuntime(ctx, &cluster)
+				if err != nil || !converged {
+					return result, false, err
+				}
+				if _, err := r.persistMysqlClusterHAStatus(ctx, &cluster, mysqlHealthyHAStatus(observation)); err != nil {
+					return ctrl.Result{}, false, err
+				}
+				return ctrl.Result{RequeueAfter: mysqlHAFailureRequeueAfter}, false, nil
+
+			case databasev1.MysqlClusterHAStateFailoverInProgress:
+				verifying := &databasev1.MysqlClusterHAStatus{
+					State:      databasev1.MysqlClusterHAStateVerifying,
+					Primary:    observation.PrimaryName,
+					PrimaryUID: observation.PrimaryUID,
+				}
+				if _, err := r.persistMysqlClusterHAStatus(ctx, &cluster, verifying); err != nil {
+					return ctrl.Result{}, false, err
+				}
+				return ctrl.Result{RequeueAfter: mysqlHAFailureRequeueAfter}, false, nil
+			}
+		}
+
+		desired := mysqlHealthyHAStatus(observation)
+		_, err := r.persistMysqlClusterHAStatus(ctx, &cluster, desired)
+		if err != nil {
 			return ctrl.Result{}, false, err
 		}
-		return ctrl.Result{}, false, nil
-	}
+		return r.reconcileMysqlHealthyPrimaryRuntime(ctx, &cluster)
 
-	return r.reconcileMysqlHealthyPrimaryRuntime(ctx, &cluster)
+	case mysqlPrimaryDegraded:
+		if _, err := r.persistMysqlClusterHAStatus(ctx, &cluster, mysqlDegradedHAStatus(observation)); err != nil {
+			return ctrl.Result{}, false, err
+		}
+		return ctrl.Result{RequeueAfter: mysqlHAFailureRequeueAfter}, false, nil
+
+	case mysqlPrimarySuspected:
+		if mysqlHAIdentityMatches(current, observation) {
+			switch current.State {
+			case databasev1.MysqlClusterHAStateSuspected:
+				if _, err := r.persistMysqlClusterHAStatus(
+					ctx,
+					&cluster,
+					mysqlFailoverRequiredHAStatus(current, observation),
+				); err != nil {
+					return ctrl.Result{}, false, err
+				}
+				return ctrl.Result{RequeueAfter: mysqlHAFailureRequeueAfter}, false, nil
+			case databasev1.MysqlClusterHAStateFailoverRequired,
+				databasev1.MysqlClusterHAStateFailoverInProgress:
+				return r.executePersistedMysqlFailover(ctx, &cluster, observation)
+			}
+		}
+		if _, err := r.persistMysqlClusterHAStatus(ctx, &cluster, mysqlSuspectedHAStatus(observation)); err != nil {
+			return ctrl.Result{}, false, err
+		}
+		return ctrl.Result{RequeueAfter: mysqlHAFailureRequeueAfter}, false, nil
+
+	case mysqlPrimaryFailureConfirmed:
+		if mysqlHAIdentityMatches(current, observation) &&
+			(current.State == databasev1.MysqlClusterHAStateFailoverRequired ||
+				current.State == databasev1.MysqlClusterHAStateFailoverInProgress) {
+			return r.executePersistedMysqlFailover(ctx, &cluster, observation)
+		}
+		if _, err := r.persistMysqlClusterHAStatus(
+			ctx,
+			&cluster,
+			mysqlFailoverRequiredHAStatus(current, observation),
+		); err != nil {
+			return ctrl.Result{}, false, err
+		}
+		return ctrl.Result{RequeueAfter: mysqlHAFailureRequeueAfter}, false, nil
+
+	default:
+		return ctrl.Result{}, false, fmt.Errorf("unsupported primary failure classification %q", observation.Classification)
+	}
 }
 
-// 通过查看 master-service 关联的 endpoint 是否为空来判断主库是否挂掉：
-func (r *MysqlClusterReconciler) checkMasterStatus(ctx context.Context, cluster databasev1.MysqlCluster) (bool, error) {
-	// 获取 master-service 关联的 Endpoints
-	endpoints := &v1.Endpoints{}
-	if err := r.Get(ctx, client.ObjectKey{Name: cluster.Spec.MasterService, Namespace: cluster.Namespace}, endpoints); err != nil {
-		return false, err
+func (r *MysqlClusterReconciler) executePersistedMysqlFailover(
+	ctx context.Context,
+	cluster *databasev1.MysqlCluster,
+	observation mysqlPrimaryFailureObservation,
+) (ctrl.Result, bool, error) {
+	if !mysqlHAIdentityMatches(cluster.Status.HA, observation) {
+		return ctrl.Result{}, false, fmt.Errorf("refusing HA execution for a stale primary identity")
 	}
 
-	// 检查 endpoints 中是否有 addresses，若为空则表示主库挂掉
-	if len(endpoints.Subsets) == 0 || len(endpoints.Subsets[0].Addresses) == 0 {
-		return false, nil
+	inProgress := cluster.Status.HA.DeepCopy()
+	inProgress.State = databasev1.MysqlClusterHAStateFailoverInProgress
+	if _, err := r.persistMysqlClusterHAStatus(ctx, cluster, inProgress); err != nil {
+		return ctrl.Result{}, false, err
+	}
+	if err := r.revalidateMysqlHAFailureIdentity(ctx, cluster, observation); err != nil {
+		return ctrl.Result{}, false, err
 	}
 
-	return true, nil
+	if err := r.handleMasterFailure(ctx, *cluster); err != nil {
+		return ctrl.Result{}, false, err
+	}
+
+	newPrimary, err := r.observeSinglePublishedPrimary(ctx, cluster)
+	if err != nil {
+		return ctrl.Result{}, false, err
+	}
+	verifying := &databasev1.MysqlClusterHAStatus{
+		State:      databasev1.MysqlClusterHAStateVerifying,
+		Primary:    newPrimary.Name,
+		PrimaryUID: string(newPrimary.UID),
+	}
+	if _, err := r.persistMysqlClusterHAStatus(ctx, cluster, verifying); err != nil {
+		return ctrl.Result{}, false, err
+	}
+	return ctrl.Result{RequeueAfter: mysqlHAFailureRequeueAfter}, false, nil
 }
 
 // 当主库挂掉时，需要选举新的主库并重新配置主从关系：

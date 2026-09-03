@@ -282,7 +282,7 @@ func TestPhase3CReplicationRuntimeTopologySafety(t *testing.T) {
 		replica := phase1HPod(t, cluster, statefulSet, 2, "slave", false)
 		misleadingEndpoint := phase1HEndpoints(cluster, replica)
 		commandsOn := make([]string, 0, 1)
-		reconciler := phase1HReconciler(t, statefulSet, publishedPrimary, replica, misleadingEndpoint)
+		reconciler := phase1HReconciler(t, cluster, statefulSet, publishedPrimary, replica, misleadingEndpoint)
 		reconciler.execCommandOnPodFn = func(commandPod *corev1.Pod, command string) (string, error) {
 			commandsOn = append(commandsOn, commandPod.Name)
 			g.Expect(command).To(Equal(mysqlShowSlaveStatusCommand()))

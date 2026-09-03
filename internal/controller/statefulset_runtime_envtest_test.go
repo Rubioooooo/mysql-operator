@@ -297,8 +297,12 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 
 		By("entering domain reconciliation only after the scale-up delta is ready")
 		_, err = reconciler.Reconcile(ctx, request)
-		Expect(err).To(MatchError(ContainSubstring(`endpoints "mysql-scale-up-master" not found`)))
+		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
+		observedCluster := &databasev1.MysqlCluster{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cluster), observedCluster)).To(Succeed())
+		Expect(observedCluster.Status.HA).NotTo(BeNil())
+		Expect(observedCluster.Status.HA.State).To(Equal(databasev1.MysqlClusterHAStateDegraded))
 		expectStatefulSetRuntimeTransition(ctx, cluster, 2, 2, 3)
 		expectStatefulSetRuntimeReplicas(ctx, statefulSet, 3)
 	})
@@ -334,8 +338,12 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 
 		By("entering domain reconciliation only after the scale-down delta is gone")
 		_, err = reconciler.Reconcile(ctx, request)
-		Expect(err).To(MatchError(ContainSubstring(`endpoints "mysql-down-safe-master" not found`)))
+		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
+		observedCluster := &databasev1.MysqlCluster{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cluster), observedCluster)).To(Succeed())
+		Expect(observedCluster.Status.HA).NotTo(BeNil())
+		Expect(observedCluster.Status.HA.State).To(Equal(databasev1.MysqlClusterHAStateDegraded))
 		expectStatefulSetRuntimeTransition(ctx, cluster, 4, 4, 3)
 		expectStatefulSetRuntimeReplicas(ctx, statefulSet, 3)
 	})
