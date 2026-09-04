@@ -559,6 +559,7 @@ func TestUpgradeReconcileObservabilityBarrier(t *testing.T) {
 	r, c, cluster := newUpgradeTest(t)
 	cluster.Spec.Image = "mysql:new"
 	storeUpgradeTestCluster(t, c, cluster)
+	prepareMysqlPDBForControlTest(t, r, cluster)
 	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(c.statusPatchCount).To(Equal(1))

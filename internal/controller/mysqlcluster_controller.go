@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-logr/logr" // 用于记录日志
 	appsv1 "k8s.io/api/apps/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime" // 提供对象的通用机制，如序列化和版本转换
 	"k8s.io/client-go/tools/record"
@@ -59,6 +60,7 @@ func mysqlClusterIsInitialized(cluster *databasev1.MysqlCluster) (bool, error) {
 // +kubebuilder:rbac:groups=apps.egonlin.com,resources=mysqlclusters/finalizers,verbs=update
 
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update
 
 // +kubebuilder:rbac:groups="",resources=pods;services;configmaps,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create;get;list;watch
@@ -96,6 +98,15 @@ func (r *MysqlClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	changed, pdbErr := r.reconcileMysqlPodDisruptionBudget(ctx, &cluster)
+	if pdbErr != nil {
+		return ctrl.Result{}, pdbErr
+	}
+	if changed {
+		// PDB writes consume this iteration before any lifecycle, SQL or HA work.
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	var (
 		result   ctrl.Result
 		complete bool
@@ -127,6 +138,7 @@ func (r *MysqlClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&databasev1.MysqlCluster{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&v1.Service{}).
 		Owns(&v1.ConfigMap{}).
 		Watches(

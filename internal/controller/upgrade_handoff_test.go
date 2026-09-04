@@ -704,6 +704,7 @@ func TestHandoffZeroMasterThroughMainReconcile(t *testing.T) {
 	h := newHandoffTest(t, 1)
 	h.stage(databasev1.MysqlClusterUpgradeHandoffStageCandidateReady)
 	g.Expect(h.step()).To(Succeed())
+	prepareMysqlPDBForControlTest(t, h.r, h.stored())
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(h.stored())}
 	for i := 0; i < 2; i++ {
 		_, err := h.r.Reconcile(context.Background(), request)

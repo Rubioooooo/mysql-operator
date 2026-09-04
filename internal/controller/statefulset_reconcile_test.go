@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -55,6 +56,8 @@ func (c *statefulSetReconcileMemoryClient) getKey(key client.ObjectKey, object c
 
 func copyStatefulSetReconcileObject(destination, source client.Object) {
 	switch destination := destination.(type) {
+	case *policyv1.PodDisruptionBudget:
+		*destination = *source.(*policyv1.PodDisruptionBudget).DeepCopy()
 	case *corev1.Service:
 		*destination = *source.(*corev1.Service).DeepCopy()
 	case *corev1.Pod:

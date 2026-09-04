@@ -106,6 +106,10 @@ func mysqlSharedConfigMapName(cluster *databasev1.MysqlCluster) string {
 	return boundedMysqlChildName(cluster.Name, "-mysql-config")
 }
 
+func mysqlPodDisruptionBudgetName(cluster *databasev1.MysqlCluster) string {
+	return boundedMysqlChildName(cluster.Name, "-mysql-pdb")
+}
+
 func mysqlIdentityLabels(cluster *databasev1.MysqlCluster) map[string]string {
 	return map[string]string{
 		LabelAppName:     mysqlAppName,

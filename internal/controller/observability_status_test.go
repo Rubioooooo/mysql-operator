@@ -247,6 +247,7 @@ func TestMysqlObservabilityReconcileBarriersAndErrors(t *testing.T) {
 			pod := phase1HPod(t, cluster, sts, 1, "master", false)
 			cluster.Status.HA = phase5FencingHA(pod, databasev1.MysqlClusterFenceStatePending)
 			r := phase1HReconciler(t, cluster, sts, pod, phase1HCredentialSecret(cluster))
+			prepareMysqlPDBForControlTest(t, r, cluster)
 			memory := r.Client.(*statefulSetReconcileMemoryClient)
 			memory.statusPatchError = patchErr
 			sql := 0
@@ -300,18 +301,32 @@ func formatObservabilityError(err error) string {
 }
 
 // Existing lifecycle regression tests assert one control iteration at a time.
-// Permit exactly one preceding projection-only iteration, never retry an error
-// or a control-path requeue. Continued projection churn is a test failure.
+// Permit one projection-only iteration and one PDB-only iteration before the
+// existing control iteration. Repeated projection or PDB churn fails the test.
 func reconcileAfterObservability(ctx context.Context, r *MysqlClusterReconciler, request ctrl.Request) (ctrl.Result, error) {
-	result, err := r.Reconcile(ctx, request)
-	if err != nil || result != (ctrl.Result{Requeue: true}) {
-		return result, err
+	original := r.Client
+	tracker := &pdbBarrierTrackingClient{Client: original}
+	r.Client = tracker
+	defer func() { r.Client = original }()
+	projected, pdbWritten := false, false
+	for {
+		tracker.pdbMutated = false
+		result, err := r.Reconcile(ctx, request)
+		if err != nil || result != (ctrl.Result{Requeue: true}) {
+			return result, err
+		}
+		if tracker.pdbMutated {
+			if pdbWritten {
+				return result, errors.New("PDB unexpectedly required a second mutation-only reconcile")
+			}
+			pdbWritten = true
+			continue
+		}
+		if projected {
+			return result, errors.New("unchanged observations unexpectedly required a second projection-only reconcile")
+		}
+		projected = true
 	}
-	result, err = r.Reconcile(ctx, request)
-	if err == nil && result == (ctrl.Result{Requeue: true}) {
-		return result, errors.New("unchanged observations unexpectedly required a second projection-only reconcile")
-	}
-	return result, err
 }
 
 func TestMysqlObservabilityDoesNotDriveHAControl(t *testing.T) {
