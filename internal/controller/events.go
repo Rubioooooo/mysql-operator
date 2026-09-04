@@ -19,6 +19,10 @@ func (r *MysqlClusterReconciler) recordMysqlEvent(cluster *databasev1.MysqlClust
 
 // Upgrade Events describe successfully persisted milestones only.
 func (r *MysqlClusterReconciler) emitMysqlUpgradeTransition(ctx context.Context, cluster *databasev1.MysqlCluster, before, after *databasev1.MysqlClusterUpgradeStatus) {
+	if before != nil && after == nil {
+		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, "UpgradeCompleted", "All members have passed final upgrade verification.")
+		return
+	}
 	if after == nil || apiequality.Semantic.DeepEqual(before, after) {
 		return
 	}
@@ -27,7 +31,15 @@ func (r *MysqlClusterReconciler) emitMysqlUpgradeTransition(ctx context.Context,
 	} else if before != nil && before.Stage == databasev1.MysqlClusterUpgradeStageTemplatePending && after.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady {
 		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, "UpgradeTemplateReady", "The target image template has been observed with OnDelete strategy.")
 	}
-	logMysqlUpgradeTransition(ctx, after)
+	if after.Handoff == nil || (before != nil && apiequality.Semantic.DeepEqual(before.Handoff, after.Handoff)) {
+		logMysqlUpgradeTransition(ctx, after)
+	}
+	if reason := mysqlUpgradeHandoffEvent(before, after); reason != "" {
+		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, reason, "Planned upgrade handoff barrier has been persisted.")
+	}
+	if after.Handoff != nil && (before == nil || !apiequality.Semantic.DeepEqual(before.Handoff, after.Handoff)) {
+		logMysqlUpgradeHandoff(ctx, after.Handoff.Stage)
+	}
 	reason := mysqlUpgradeReplacementEvent(before, after)
 	if reason != "" {
 		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, reason, "Durable replica upgrade barrier has been persisted.")
@@ -51,8 +63,29 @@ func mysqlUpgradeReplacementEvent(before, after *databasev1.MysqlClusterUpgradeS
 		return "UpgradeReplicaSelected"
 	case old != nil && next != nil && old.Stage == databasev1.MysqlClusterUpgradeReplacementStageWaitingForReplacement && next.Stage == databasev1.MysqlClusterUpgradeReplacementStageVerifying:
 		return "UpgradeReplicaObserved"
-	case old != nil && old.Stage == databasev1.MysqlClusterUpgradeReplacementStageVerifying && next == nil && after.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady:
+	case old != nil && old.Stage == databasev1.MysqlClusterUpgradeReplacementStageVerifying && next == nil && (after.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady || after.Stage == databasev1.MysqlClusterUpgradeStagePrimaryReady):
 		return "UpgradeReplicaVerified"
+	}
+	return ""
+}
+
+func mysqlUpgradeHandoffEvent(before, after *databasev1.MysqlClusterUpgradeStatus) string {
+	if after == nil || after.Handoff == nil || (before != nil && apiequality.Semantic.DeepEqual(before.Handoff, after.Handoff)) {
+		return ""
+	}
+	switch after.Handoff.Stage {
+	case databasev1.MysqlClusterUpgradeHandoffStageFencing:
+		return "UpgradeHandoffSelected"
+	case databasev1.MysqlClusterUpgradeHandoffStageFenceVerified:
+		return "UpgradePrimaryFenceVerified"
+	case databasev1.MysqlClusterUpgradeHandoffStageCandidateReady:
+		return "UpgradeHandoffCandidateReady"
+	case databasev1.MysqlClusterUpgradeHandoffStagePromoting:
+		return "UpgradePromotionReady"
+	case databasev1.MysqlClusterUpgradeHandoffStageReconfiguring:
+		return "UpgradeHandoffReconfiguring"
+	case databasev1.MysqlClusterUpgradeHandoffStageCompleted:
+		return "UpgradePrimaryReady"
 	}
 	return ""
 }

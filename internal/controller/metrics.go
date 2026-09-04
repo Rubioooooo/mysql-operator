@@ -11,7 +11,8 @@ import (
 // Only namespace and cluster are runtime label values. All remaining label
 // domains are fixed here, including the allowlists for Gate 2-B reasons.
 var (
-	mysqlMetricUpgradeStages     = []string{"Preparing", "TemplatePending", "TemplateReady", "ReplicasVerified"}
+	mysqlMetricUpgradeStages     = []string{"Preparing", "TemplatePending", "TemplateReady", "ReplicasVerified", "PrimaryReady"}
+	mysqlMetricHandoffStages     = []string{"Fencing", "FenceVerified", "CandidateReady", "Promoting", "Reconfiguring", "Completed"}
 	mysqlMetricReplacementStages = []string{"DeletePending", "WaitingForReplacement", "Verifying"}
 	mysqlMetricPhases            = []string{"Pending", "Initializing", "Running", "Degraded", "Failed"}
 	mysqlMetricConditions        = []string{"Available", "Progressing", "Degraded"}
@@ -30,6 +31,7 @@ var (
 // or persistence and is safe to omit from a reconciler. Prometheus vectors handle
 // concurrent updates; no control operation depends on metric values.
 type MysqlClusterMetrics struct {
+	upgradeHandoffActive, upgradeHandoffStage         *prometheus.GaugeVec
 	upgradeReplacementActive, upgradeReplacementStage *prometheus.GaugeVec
 	upgradeActive, upgradeStage                       *prometheus.GaugeVec
 	desiredReplicas, currentReplicas, readyReplicas   *prometheus.GaugeVec
@@ -51,6 +53,8 @@ func NewMysqlClusterMetrics(registerer prometheus.Registerer) (*MysqlClusterMetr
 		return prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "mysql_operator", Subsystem: "mysqlcluster", Name: name, Help: help}, []string{"namespace", "cluster", "transition"})
 	}
 	m := &MysqlClusterMetrics{
+		upgradeHandoffActive:     gauge("upgrade_handoff_active", "Whether a durable planned handoff is active."),
+		upgradeHandoffStage:      gauge("upgrade_handoff_stage", "Durable planned handoff stage, as a one-hot gauge.", "stage"),
 		upgradeReplacementActive: gauge("upgrade_replacement_active", "Whether a durable replica replacement is active."),
 		upgradeReplacementStage:  gauge("upgrade_replacement_stage", "Durable replica replacement stage, as a one-hot gauge.", "stage"),
 		upgradeActive:            gauge("upgrade_active", "Whether a durable image upgrade is active."),
@@ -69,6 +73,7 @@ func NewMysqlClusterMetrics(registerer prometheus.Registerer) (*MysqlClusterMetr
 	}
 	collectors := []prometheus.Collector{m.desiredReplicas, m.currentReplicas, m.readyReplicas, m.phase, m.condition, m.replicaTransitionActive, m.haState, m.failoverStage, m.fenceState, m.haTransitions, m.replicaTransitions, m.upgradeActive, m.upgradeStage}
 	collectors = append(collectors, m.upgradeReplacementActive, m.upgradeReplacementStage)
+	collectors = append(collectors, m.upgradeHandoffActive, m.upgradeHandoffStage)
 	for i, collector := range collectors {
 		if err := registerer.Register(collector); err != nil {
 			// Undo only this constructor's registrations, leaving any existing
@@ -102,6 +107,13 @@ func (m *MysqlClusterMetrics) syncStatus(cluster *databasev1.MysqlCluster) {
 	}
 	m.upgradeReplacementActive.WithLabelValues(namespace, name).Set(mysqlMetricBool(replacementActive))
 	setMysqlMetricOneHot(m.upgradeReplacementStage, namespace, name, mysqlMetricReplacementStages, replacementStage)
+	handoffStage := ""
+	handoffActive := cluster.Status.Upgrade != nil && cluster.Status.Upgrade.Handoff != nil
+	if handoffActive {
+		handoffStage = string(cluster.Status.Upgrade.Handoff.Stage)
+	}
+	m.upgradeHandoffActive.WithLabelValues(namespace, name).Set(mysqlMetricBool(handoffActive))
+	setMysqlMetricOneHot(m.upgradeHandoffStage, namespace, name, mysqlMetricHandoffStages, handoffStage)
 	m.desiredReplicas.WithLabelValues(namespace, name).Set(float64(desiredReplicas(cluster)))
 	m.currentReplicas.WithLabelValues(namespace, name).Set(float64(cluster.Status.CurrentReplicas))
 	m.readyReplicas.WithLabelValues(namespace, name).Set(float64(cluster.Status.ReadyReplicas))
@@ -171,6 +183,8 @@ func (m *MysqlClusterMetrics) deleteCluster(namespace, cluster string) {
 	deleteMysqlMetricDomain(m.upgradeStage, namespace, cluster, mysqlMetricUpgradeStages)
 	m.upgradeReplacementActive.DeleteLabelValues(namespace, cluster)
 	deleteMysqlMetricDomain(m.upgradeReplacementStage, namespace, cluster, mysqlMetricReplacementStages)
+	m.upgradeHandoffActive.DeleteLabelValues(namespace, cluster)
+	deleteMysqlMetricDomain(m.upgradeHandoffStage, namespace, cluster, mysqlMetricHandoffStages)
 	deleteMysqlMetricDomain(m.condition, namespace, cluster, mysqlMetricConditions)
 	deleteMysqlMetricDomain(m.haState, namespace, cluster, mysqlMetricHAStates)
 	deleteMysqlMetricDomain(m.failoverStage, namespace, cluster, mysqlMetricFailoverStages)

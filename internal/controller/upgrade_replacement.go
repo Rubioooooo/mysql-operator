@@ -23,7 +23,7 @@ func (e *mysqlUpgradeDeleteError) Unwrap() error { return e.cause }
 // Dynamic user intent is an interlock, never an intrinsic status validity rule.
 // Let the existing runtime persist and finish replica/HA transitions first.
 func mysqlUpgradeReplacementAllowed(cluster *databasev1.MysqlCluster) bool {
-	return cluster.Status.Upgrade != nil && cluster.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady &&
+	return cluster.Status.Upgrade != nil && (cluster.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady || cluster.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStagePrimaryReady) &&
 		cluster.Spec.Image == cluster.Status.Upgrade.TargetImage && mysqlUpgradeHAHealthy(cluster) &&
 		cluster.Status.ReplicaTransition == nil && cluster.Status.LastConvergedReplicas != nil &&
 		*cluster.Status.LastConvergedReplicas == desiredReplicas(cluster)
@@ -31,6 +31,12 @@ func mysqlUpgradeReplacementAllowed(cluster *databasev1.MysqlCluster) bool {
 
 func validateMysqlReplacementMembership(cluster *databasev1.MysqlCluster) error {
 	replacement := cluster.Status.Upgrade.Replacement
+	if cluster.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStagePrimaryReady && replacement != nil {
+		h := cluster.Status.Upgrade.Handoff
+		if h == nil || replacement.PodName != h.OldPrimary || replacement.OldPodUID != h.OldPrimaryUID {
+			return fmt.Errorf("PrimaryReady replacement must bind the durable former primary")
+		}
+	}
 	if replacement != nil && (replacement.Ordinal > desiredReplicas(cluster) || replacement.PodName != mysqlStatefulSetPodName(cluster, replacement.Ordinal)) {
 		return fmt.Errorf("durable replacement is incompatible with converged membership")
 	}
@@ -131,6 +137,12 @@ func (r *MysqlClusterReconciler) reconcileMysqlUpgradeReplacementPreRuntime(ctx 
 	if !safe {
 		return false, nil
 	} // fresh failure goes to existing HA
+	if cluster.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStagePrimaryReady {
+		h := cluster.Status.Upgrade.Handoff
+		if primary.Name != h.Candidate || string(primary.UID) != h.CandidateUID {
+			return true, fmt.Errorf("PrimaryReady requires durable candidate authority")
+		}
+	}
 	if replacement.PodName == primary.Name {
 		return true, fmt.Errorf("replacement target is now the current primary")
 	}
@@ -284,6 +296,11 @@ func (r *MysqlClusterReconciler) proveMysqlUpgradeReplicas(ctx context.Context, 
 			return nil, false, fmt.Errorf("upgrade replica lacks healthy replication with verified primary source identity")
 		}
 	}
+	if cluster.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStagePrimaryReady {
+		if _, err := r.proveMysqlPrimaryReady(ctx, cluster, false); err != nil {
+			return nil, false, err
+		}
+	}
 	return &mysqlUpgradeReplicaProof{primary: primary, members: members, statefulSetUID: sts.UID}, true, nil
 }
 
@@ -371,6 +388,9 @@ func (r *MysqlClusterReconciler) reconcileMysqlUpgradeReplacementPostRuntime(ctx
 		return r.persistMysqlReplacement(ctx, cluster, &databasev1.MysqlClusterUpgradeReplacementStatus{
 			Ordinal: selected.Ordinal, PodName: selected.Pod.Name, OldPodUID: string(selected.Pod.UID), Stage: databasev1.MysqlClusterUpgradeReplacementStageDeletePending,
 		})
+	}
+	if cluster.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStagePrimaryReady {
+		return r.completeMysqlUpgrade(ctx, cluster)
 	}
 	upgrade := cluster.Status.Upgrade.DeepCopy()
 	upgrade.Stage = databasev1.MysqlClusterUpgradeStageReplicasVerified

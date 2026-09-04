@@ -78,7 +78,9 @@ func TestUpgradeReplicasVerifiedEffectiveImage(t *testing.T) {
 	_, err = r.ensureMysqlStatefulSet(context.Background(), cluster)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(upgradeTestSTS(t, r, cluster).Spec.Template.Spec.Containers[0].Image).To(Equal("mysql:new"))
-	_, _, err = r.reconcileMysqlUpgradeRuntime(context.Background(), cluster)
+	// ReplicasVerified now hands off to Gate 7-C. This Gate 7-B regression
+	// exercises ordinary runtime image authority without entering planned handoff.
+	_, _, err = r.reconcileStatefulSetRuntime(context.Background(), cluster)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(phase4StoredCluster(t, r, cluster).Status.Upgrade.Stage).To(Equal(databasev1.MysqlClusterUpgradeStageReplicasVerified))
 	g.Expect(c.podDeletes).To(BeZero())
@@ -568,7 +570,9 @@ func TestUpgradeReplacementMultipleReplicas(t *testing.T) {
 	g.Expect(f.stored().Status.LastConvergedImage).To(Equal("mysql:old"))
 	g.Expect(f.c.deletes).To(HaveLen(2))
 	g.Expect(f.pod(3)).To(Equal(primary))
-	g.Expect(f.run()).To(Succeed())
+	// Gate 7-B ends at ReplicasVerified; Gate 7-C owns the next upgrade barrier.
+	_, _, runtimeErr := f.r.reconcileStatefulSetRuntime(context.Background(), f.stored())
+	g.Expect(runtimeErr).NotTo(HaveOccurred())
 	g.Expect(upgradeTestSTS(t, f.r, f.cluster).Spec.Template.Spec.Containers[0].Image).To(Equal("mysql:new"))
 	for _, reason := range []string{"UpgradeReplicaSelected", "UpgradeReplicaObserved", "UpgradeReplicaVerified", "UpgradeReplicaSelected", "UpgradeReplicaObserved", "UpgradeReplicaVerified", "UpgradeReplicasVerified"} {
 		g.Expect(f.recorder.Events).To(Receive(ContainSubstring(reason)))

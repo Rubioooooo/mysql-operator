@@ -23,6 +23,10 @@ func logMysqlUpgradeReplacement(ctx context.Context, replacement *databasev1.Mys
 		"operation", "upgrade_replacement", "replacement_stage", replacement.Stage, "ordinal", replacement.Ordinal)
 }
 
+func logMysqlUpgradeHandoff(ctx context.Context, stage databasev1.MysqlClusterUpgradeHandoffStage) {
+	log.FromContext(ctx).Info("mysqlcluster planned handoff barrier persisted", "operation", "upgrade_handoff", "handoff_stage", stage)
+}
+
 // Explicit allowlist: never pass an HA/failover object to the logger. Those
 // objects also contain UID, server identity and replication proof material.
 func mysqlSafeHALogValues(status *databasev1.MysqlClusterHAStatus) []interface{} {

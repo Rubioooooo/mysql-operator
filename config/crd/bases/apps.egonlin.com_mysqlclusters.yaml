@@ -468,6 +468,54 @@ spec:
                   fromImage:
                     minLength: 1
                     type: string
+                  handoff:
+                    description: MysqlClusterUpgradeHandoffStatus owns immutable identities
+                      and fenced history.
+                    properties:
+                      candidate:
+                        minLength: 1
+                        type: string
+                      candidateUID:
+                        minLength: 1
+                        type: string
+                      oldPrimary:
+                        minLength: 1
+                        type: string
+                      oldPrimaryGTIDSet:
+                        type: string
+                      oldPrimaryServerUUID:
+                        type: string
+                      oldPrimaryUID:
+                        minLength: 1
+                        type: string
+                      stage:
+                        description: MysqlClusterUpgradeHandoffStage describes planned
+                          authority transfer, not failure.
+                        enum:
+                        - Fencing
+                        - FenceVerified
+                        - CandidateReady
+                        - Promoting
+                        - Reconfiguring
+                        - Completed
+                        type: string
+                    required:
+                    - candidate
+                    - candidateUID
+                    - oldPrimary
+                    - oldPrimaryUID
+                    - stage
+                    type: object
+                    x-kubernetes-validations:
+                    - message: handoff identities must differ
+                      rule: self.oldPrimary != self.candidate && self.oldPrimaryUID
+                        != self.candidateUID
+                    - message: Fencing must not carry a checkpoint
+                      rule: self.stage != 'Fencing' || ((!has(self.oldPrimaryServerUUID)
+                        || self.oldPrimaryServerUUID.size() == 0) && !has(self.oldPrimaryGTIDSet))
+                    - message: post-fence handoff requires a checkpoint
+                      rule: self.stage == 'Fencing' || (has(self.oldPrimaryServerUUID)
+                        && self.oldPrimaryServerUUID.size() > 0 && has(self.oldPrimaryGTIDSet))
                   replacement:
                     description: MysqlClusterUpgradeReplacementStatus binds delete
                       and verification to exact Pod incarnations.
@@ -513,6 +561,7 @@ spec:
                     - TemplatePending
                     - TemplateReady
                     - ReplicasVerified
+                    - PrimaryReady
                     type: string
                   targetImage:
                     minLength: 1
@@ -523,8 +572,18 @@ spec:
                 - targetImage
                 type: object
                 x-kubernetes-validations:
-                - message: replacement requires TemplateReady
-                  rule: '!has(self.replacement) || self.stage == ''TemplateReady'''
+                - message: replacement requires TemplateReady or PrimaryReady
+                  rule: '!has(self.replacement) || self.stage in [''TemplateReady'',
+                    ''PrimaryReady'']'
+                - message: handoff requires ReplicasVerified or PrimaryReady
+                  rule: '!has(self.handoff) || self.stage in [''ReplicasVerified'',
+                    ''PrimaryReady'']'
+                - message: PrimaryReady requires a Completed handoff
+                  rule: self.stage != 'PrimaryReady' || (has(self.handoff) && self.handoff.stage
+                    == 'Completed')
+                - message: Completed handoff requires PrimaryReady
+                  rule: '!has(self.handoff) || self.handoff.stage != ''Completed''
+                    || self.stage == ''PrimaryReady'''
             type: object
             x-kubernetes-validations:
             - message: credentialsSecretUID is write-once and cannot be changed or

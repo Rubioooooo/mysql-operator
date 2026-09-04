@@ -102,7 +102,7 @@ type MysqlClusterReplicaTransitionStatus struct {
 }
 
 // MysqlClusterUpgradeStage describes the durable upgrade control barriers.
-// +kubebuilder:validation:Enum=Preparing;TemplatePending;TemplateReady;ReplicasVerified
+// +kubebuilder:validation:Enum=Preparing;TemplatePending;TemplateReady;ReplicasVerified;PrimaryReady
 type MysqlClusterUpgradeStage string
 
 const (
@@ -110,10 +110,14 @@ const (
 	MysqlClusterUpgradeStageTemplatePending  MysqlClusterUpgradeStage = "TemplatePending"
 	MysqlClusterUpgradeStageTemplateReady    MysqlClusterUpgradeStage = "TemplateReady"
 	MysqlClusterUpgradeStageReplicasVerified MysqlClusterUpgradeStage = "ReplicasVerified"
+	MysqlClusterUpgradeStagePrimaryReady     MysqlClusterUpgradeStage = "PrimaryReady"
 )
 
 // MysqlClusterUpgradeStatus preserves the original image intent across restarts.
-// +kubebuilder:validation:XValidation:rule="!has(self.replacement) || self.stage == 'TemplateReady'",message="replacement requires TemplateReady"
+// +kubebuilder:validation:XValidation:rule="!has(self.replacement) || self.stage in ['TemplateReady', 'PrimaryReady']",message="replacement requires TemplateReady or PrimaryReady"
+// +kubebuilder:validation:XValidation:rule="!has(self.handoff) || self.stage in ['ReplicasVerified', 'PrimaryReady']",message="handoff requires ReplicasVerified or PrimaryReady"
+// +kubebuilder:validation:XValidation:rule="self.stage != 'PrimaryReady' || (has(self.handoff) && self.handoff.stage == 'Completed')",message="PrimaryReady requires a Completed handoff"
+// +kubebuilder:validation:XValidation:rule="!has(self.handoff) || self.handoff.stage != 'Completed' || self.stage == 'PrimaryReady'",message="Completed handoff requires PrimaryReady"
 type MysqlClusterUpgradeStatus struct {
 	// +kubebuilder:validation:MinLength=1
 	FromImage string `json:"fromImage"`
@@ -121,6 +125,38 @@ type MysqlClusterUpgradeStatus struct {
 	TargetImage string                                `json:"targetImage"`
 	Stage       MysqlClusterUpgradeStage              `json:"stage"`
 	Replacement *MysqlClusterUpgradeReplacementStatus `json:"replacement,omitempty"`
+	Handoff     *MysqlClusterUpgradeHandoffStatus     `json:"handoff,omitempty"`
+}
+
+// MysqlClusterUpgradeHandoffStage describes planned authority transfer, not failure.
+// +kubebuilder:validation:Enum=Fencing;FenceVerified;CandidateReady;Promoting;Reconfiguring;Completed
+type MysqlClusterUpgradeHandoffStage string
+
+const (
+	MysqlClusterUpgradeHandoffStageFencing        MysqlClusterUpgradeHandoffStage = "Fencing"
+	MysqlClusterUpgradeHandoffStageFenceVerified  MysqlClusterUpgradeHandoffStage = "FenceVerified"
+	MysqlClusterUpgradeHandoffStageCandidateReady MysqlClusterUpgradeHandoffStage = "CandidateReady"
+	MysqlClusterUpgradeHandoffStagePromoting      MysqlClusterUpgradeHandoffStage = "Promoting"
+	MysqlClusterUpgradeHandoffStageReconfiguring  MysqlClusterUpgradeHandoffStage = "Reconfiguring"
+	MysqlClusterUpgradeHandoffStageCompleted      MysqlClusterUpgradeHandoffStage = "Completed"
+)
+
+// MysqlClusterUpgradeHandoffStatus owns immutable identities and fenced history.
+// +kubebuilder:validation:XValidation:rule="self.oldPrimary != self.candidate && self.oldPrimaryUID != self.candidateUID",message="handoff identities must differ"
+// +kubebuilder:validation:XValidation:rule="self.stage != 'Fencing' || ((!has(self.oldPrimaryServerUUID) || self.oldPrimaryServerUUID.size() == 0) && !has(self.oldPrimaryGTIDSet))",message="Fencing must not carry a checkpoint"
+// +kubebuilder:validation:XValidation:rule="self.stage == 'Fencing' || (has(self.oldPrimaryServerUUID) && self.oldPrimaryServerUUID.size() > 0 && has(self.oldPrimaryGTIDSet))",message="post-fence handoff requires a checkpoint"
+type MysqlClusterUpgradeHandoffStatus struct {
+	Stage MysqlClusterUpgradeHandoffStage `json:"stage"`
+	// +kubebuilder:validation:MinLength=1
+	OldPrimary string `json:"oldPrimary"`
+	// +kubebuilder:validation:MinLength=1
+	OldPrimaryUID string `json:"oldPrimaryUID"`
+	// +kubebuilder:validation:MinLength=1
+	Candidate string `json:"candidate"`
+	// +kubebuilder:validation:MinLength=1
+	CandidateUID         string  `json:"candidateUID"`
+	OldPrimaryServerUUID string  `json:"oldPrimaryServerUUID,omitempty"`
+	OldPrimaryGTIDSet    *string `json:"oldPrimaryGTIDSet,omitempty"`
 }
 
 // MysqlClusterUpgradeReplacementStage describes one durable replica replacement.

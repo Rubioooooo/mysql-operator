@@ -17,7 +17,7 @@ func mysqlStatefulSetEffectiveImage(cluster *databasev1.MysqlCluster) (string, e
 		return "", err
 	}
 	if upgrade := cluster.Status.Upgrade; upgrade != nil {
-		if upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady || upgrade.Stage == databasev1.MysqlClusterUpgradeStageReplicasVerified {
+		if upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady || upgrade.Stage == databasev1.MysqlClusterUpgradeStageReplicasVerified || upgrade.Stage == databasev1.MysqlClusterUpgradeStagePrimaryReady {
 			return upgrade.TargetImage, nil
 		}
 		return upgrade.FromImage, nil
@@ -56,7 +56,7 @@ func (r *MysqlClusterReconciler) reconcileMysqlUpgradeRuntime(ctx context.Contex
 		return result, complete, nil
 	}
 	retargeted := before.Spec.Image != before.Status.Upgrade.TargetImage
-	if !retargeted && before.Status.Upgrade.Stage != databasev1.MysqlClusterUpgradeStagePreparing && before.Status.Upgrade.Stage != databasev1.MysqlClusterUpgradeStageTemplateReady {
+	if !retargeted && before.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplatePending {
 		return result, complete, nil
 	}
 	// The existing runtime can persist HA through a value copy. A successful
@@ -68,7 +68,11 @@ func (r *MysqlClusterReconciler) reconcileMysqlUpgradeRuntime(ctx context.Contex
 	if fresh.ResourceVersion != before.ResourceVersion {
 		return ctrl.Result{Requeue: true}, false, nil
 	}
-	if !retargeted && fresh.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady {
+	if !retargeted && fresh.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStageReplicasVerified {
+		err := r.reconcileMysqlHandoffEntry(ctx, fresh)
+		return ctrl.Result{RequeueAfter: mysqlReplicationRuntimeRequeueAfter}, false, err
+	}
+	if !retargeted && (fresh.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady || fresh.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStagePrimaryReady) {
 		err := r.reconcileMysqlUpgradeReplacementPostRuntime(ctx, fresh)
 		return ctrl.Result{RequeueAfter: mysqlReplicationRuntimeRequeueAfter}, false, err
 	}
@@ -108,6 +112,9 @@ func (r *MysqlClusterReconciler) reconcileMysqlUpgradePreRuntime(ctx context.Con
 			FromImage: cluster.Status.LastConvergedImage, TargetImage: cluster.Spec.Image, Stage: databasev1.MysqlClusterUpgradeStagePreparing,
 		})
 	}
+	if upgrade.Handoff != nil && upgrade.Handoff.Stage != databasev1.MysqlClusterUpgradeHandoffStageCompleted {
+		return r.reconcileMysqlHandoffPreRuntime(ctx, cluster)
+	}
 	if cluster.Spec.Image != upgrade.TargetImage {
 		// The durable effective image protects ordinary StatefulSet writes.
 		// Always let runtime perform self-healing, replica transitions and HA
@@ -115,7 +122,7 @@ func (r *MysqlClusterReconciler) reconcileMysqlUpgradePreRuntime(ctx context.Con
 		// upgrade-specific target-template mutation below for a retargeted plan.
 		return false, nil
 	}
-	if upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady && upgrade.Replacement != nil {
+	if (upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady || upgrade.Stage == databasev1.MysqlClusterUpgradeStagePrimaryReady) && upgrade.Replacement != nil {
 		return r.reconcileMysqlUpgradeReplacementPreRuntime(ctx, cluster)
 	}
 	if upgrade.Stage != databasev1.MysqlClusterUpgradeStageTemplatePending {

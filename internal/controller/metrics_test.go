@@ -21,6 +21,32 @@ import (
 
 const mysqlTestMetricPrefix = "mysql_operator_mysqlcluster_"
 
+func TestHandoffMetrics(t *testing.T) {
+	g := NewWithT(t)
+	m, registry := newMysqlMetricsForTest(t)
+	cluster := phase1HCluster("handoff-metrics", true)
+	upgradeTestPlan(cluster, databasev1.MysqlClusterUpgradeStageReplicasVerified)
+	for _, stage := range append(append([]string{""}, mysqlMetricHandoffStages...), "SENSITIVE-FUTURE") {
+		cluster.Status.Upgrade.Handoff = nil
+		if stage != "" {
+			proof := "SENSITIVE-GTID"
+			cluster.Status.Upgrade.Handoff = &databasev1.MysqlClusterUpgradeHandoffStatus{Stage: databasev1.MysqlClusterUpgradeHandoffStage(stage), OldPrimary: "SENSITIVE-POD", OldPrimaryUID: "SENSITIVE-UID", Candidate: "SENSITIVE-CANDIDATE", CandidateUID: "SENSITIVE-CANDIDATE-UID", OldPrimaryServerUUID: "SENSITIVE-UUID", OldPrimaryGTIDSet: &proof}
+		}
+		m.syncStatus(cluster)
+		expectMysqlGauge(t, registry, cluster, "upgrade_handoff_active", "", "", mysqlMetricBool(stage != ""))
+		for _, allowed := range mysqlMetricHandoffStages {
+			expectMysqlGauge(t, registry, cluster, "upgrade_handoff_stage", "stage", allowed, mysqlMetricBool(stage == allowed))
+		}
+		for _, sample := range gatherMysqlMetrics(t, registry) {
+			for _, value := range sample.labels {
+				g.Expect(value).NotTo(ContainSubstring("SENSITIVE-"))
+			}
+		}
+	}
+	m.deleteCluster(cluster.Namespace, cluster.Name)
+	g.Expect(gatherMysqlMetrics(t, registry)).To(BeEmpty())
+}
+
 func TestUpgradeReplacementMetrics(t *testing.T) {
 	g := NewWithT(t)
 	m, registry := newMysqlMetricsForTest(t)
@@ -51,14 +77,14 @@ func TestUpgradeMetrics(t *testing.T) {
 	g := NewWithT(t)
 	m, registry := newMysqlMetricsForTest(t)
 	cluster := phase1HCluster("upgrade-metrics", true)
-	for _, stage := range []string{"", "Preparing", "TemplatePending", "TemplateReady", "ReplicasVerified", "SENSITIVE-UNKNOWN"} {
+	for _, stage := range []string{"", "Preparing", "TemplatePending", "TemplateReady", "ReplicasVerified", "PrimaryReady", "SENSITIVE-UNKNOWN"} {
 		cluster.Status.Upgrade = nil
 		if stage != "" {
 			cluster.Status.Upgrade = &databasev1.MysqlClusterUpgradeStatus{FromImage: "SENSITIVE-IMAGE-OLD", TargetImage: "SENSITIVE-IMAGE-NEW", Stage: databasev1.MysqlClusterUpgradeStage(stage)}
 		}
 		m.syncStatus(cluster)
 		expectMysqlGauge(t, registry, cluster, "upgrade_active", "", "", mysqlMetricBool(stage != ""))
-		for _, allowed := range []string{"Preparing", "TemplatePending", "TemplateReady", "ReplicasVerified"} {
+		for _, allowed := range []string{"Preparing", "TemplatePending", "TemplateReady", "ReplicasVerified", "PrimaryReady"} {
 			expectMysqlGauge(t, registry, cluster, "upgrade_stage", "stage", allowed, mysqlMetricBool(stage == allowed))
 		}
 		for _, sample := range gatherMysqlMetrics(t, registry) {
@@ -173,7 +199,7 @@ func TestMysqlMetricsRegistration(t *testing.T) {
 		names = append(names, strings.TrimPrefix(family.GetName(), mysqlTestMetricPrefix))
 		g.Expect(family.GetName()).To(HavePrefix(mysqlTestMetricPrefix))
 	}
-	g.Expect(names).To(ConsistOf("desired_replicas", "current_replicas", "ready_replicas", "phase", "condition", "replica_transition_active", "ha_state", "failover_stage", "fence_state", "ha_transitions_total", "replica_transitions_total", "upgrade_active", "upgrade_stage", "upgrade_replacement_active", "upgrade_replacement_stage"))
+	g.Expect(names).To(ConsistOf("desired_replicas", "current_replicas", "ready_replicas", "phase", "condition", "replica_transition_active", "ha_state", "failover_stage", "fence_state", "ha_transitions_total", "replica_transitions_total", "upgrade_active", "upgrade_stage", "upgrade_replacement_active", "upgrade_replacement_stage", "upgrade_handoff_active", "upgrade_handoff_stage"))
 	before := mysqlMetricSnapshot(t, registry)
 	duplicate, err := NewMysqlClusterMetrics(registry)
 	g.Expect(err).To(HaveOccurred())
@@ -357,7 +383,7 @@ func TestMysqlMetricsProjectionPublicationAndRestart(t *testing.T) {
 			g.Expect(memory.statusPatchCount).To(Equal(1))
 			expectMysqlGauge(t, registry, stored, "current_replicas", "", "", 1)
 			expectMysqlGauge(t, registry, stored, "phase", "phase", "Running", 1)
-			g.Expect(gatherMysqlMetrics(t, registry)).To(HaveLen(34))
+			g.Expect(gatherMysqlMetrics(t, registry)).To(HaveLen(42))
 			withoutMetrics := phase1HReconciler(t, cluster, sts, pod, endpoints)
 			withoutResult, withoutErr := withoutMetrics.Reconcile(context.Background(), request)
 			g.Expect(withoutErr).NotTo(HaveOccurred())
@@ -409,7 +435,7 @@ func TestMysqlMetricsDeletionCleanup(t *testing.T) {
 			}
 			g.Expect(err).NotTo(HaveOccurred())
 			samples := gatherMysqlMetrics(t, registry)
-			g.Expect(samples).To(HaveLen(2 * (34 + 14 + 3)))
+			g.Expect(samples).To(HaveLen(2 * (42 + 14 + 3)))
 			for _, sample := range samples {
 				g.Expect(sample.labels["namespace"] == cluster.Namespace && sample.labels["cluster"] == cluster.Name).To(BeFalse())
 			}

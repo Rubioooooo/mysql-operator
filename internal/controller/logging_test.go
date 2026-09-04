@@ -81,6 +81,19 @@ func newMysqlLogContext(level int) (context.Context, *mysqlLogCapture) {
 	return log.IntoContext(context.Background(), logr.New(&mysqlCaptureLogSink{capture: capture, maxLevel: level})), capture
 }
 
+func TestHandoffLogSafety(t *testing.T) {
+	g := NewWithT(t)
+	ctx, capture := newMysqlLogContext(0)
+	h := newHandoffTest(t, 1)
+	h.r.Log = logr.Discard()
+	h.r.Recorder = nil
+	g.Expect(h.r.reconcileMysqlHandoffEntry(ctx, h.stored())).To(Succeed())
+	entries := capture.snapshot()
+	g.Expect(entries).To(HaveLen(1))
+	g.Expect(entries[0].Values).To(Equal(map[string]interface{}{"operation": "upgrade_handoff", "handoff_stage": databasev1.MysqlClusterUpgradeHandoffStageFencing}))
+	expectMysqlSafeLogs(t, entries)
+}
+
 func TestUpgradeReplacementLoggingSafety(t *testing.T) {
 	g := NewWithT(t)
 	ctx, capture := newMysqlLogContext(0)
@@ -141,7 +154,7 @@ func expectMysqlSafeLogs(t *testing.T, entries []mysqlCapturedLog) {
 	rendered, err := json.Marshal(entries)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(string(rendered)).NotTo(ContainSubstring("SENSITIVE-"))
-	allowed := []string{"namespace", "cluster", "operation", "reason", "phase", "ha_state", "failover_stage", "fence_state", "primary", "candidate", "failed_primary", "desired_replicas", "current_replicas", "ready_replicas", "from_replicas", "target_replicas", "pod", "pods", "replicas", "failed_replicas", "upgrade_stage", "from_image", "target_image", "replacement_stage", "ordinal"}
+	allowed := []string{"namespace", "cluster", "operation", "reason", "phase", "ha_state", "failover_stage", "fence_state", "primary", "candidate", "failed_primary", "desired_replicas", "current_replicas", "ready_replicas", "from_replicas", "target_replicas", "pod", "pods", "replicas", "failed_replicas", "upgrade_stage", "from_image", "target_image", "replacement_stage", "ordinal", "handoff_stage"}
 	for _, entry := range entries {
 		for key := range entry.Values {
 			g.Expect(key).To(BeElementOf(allowed))

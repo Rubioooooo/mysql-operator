@@ -19,16 +19,19 @@ func validateMysqlClusterUpgradeStatus(status *databasev1.MysqlClusterStatus) er
 		return fmt.Errorf("upgrade requires fromImage equal to lastConvergedImage and different from targetImage")
 	}
 	switch upgrade.Stage {
-	case databasev1.MysqlClusterUpgradeStagePreparing, databasev1.MysqlClusterUpgradeStageTemplatePending, databasev1.MysqlClusterUpgradeStageTemplateReady, databasev1.MysqlClusterUpgradeStageReplicasVerified:
+	case databasev1.MysqlClusterUpgradeStagePreparing, databasev1.MysqlClusterUpgradeStageTemplatePending, databasev1.MysqlClusterUpgradeStageTemplateReady, databasev1.MysqlClusterUpgradeStageReplicasVerified, databasev1.MysqlClusterUpgradeStagePrimaryReady:
 	default:
 		return fmt.Errorf("unknown durable upgrade stage")
+	}
+	if err := validateMysqlUpgradeHandoffStatus(upgrade); err != nil {
+		return err
 	}
 	replacement := upgrade.Replacement
 	if replacement == nil {
 		return nil
 	}
-	if upgrade.Stage != databasev1.MysqlClusterUpgradeStageTemplateReady {
-		return fmt.Errorf("replacement requires TemplateReady")
+	if upgrade.Stage != databasev1.MysqlClusterUpgradeStageTemplateReady && upgrade.Stage != databasev1.MysqlClusterUpgradeStagePrimaryReady {
+		return fmt.Errorf("replacement requires TemplateReady or PrimaryReady")
 	}
 	if replacement.Ordinal < 1 || strings.TrimSpace(replacement.PodName) == "" || strings.TrimSpace(replacement.OldPodUID) == "" {
 		return fmt.Errorf("replacement requires positive ordinal and non-empty Pod name and old identity")
@@ -44,6 +47,38 @@ func validateMysqlClusterUpgradeStatus(status *databasev1.MysqlClusterStatus) er
 		}
 	default:
 		return fmt.Errorf("unknown durable replacement stage")
+	}
+	return nil
+}
+
+func validateMysqlUpgradeHandoffStatus(upgrade *databasev1.MysqlClusterUpgradeStatus) error {
+	h := upgrade.Handoff
+	if upgrade.Stage == databasev1.MysqlClusterUpgradeStagePrimaryReady && (h == nil || h.Stage != databasev1.MysqlClusterUpgradeHandoffStageCompleted) {
+		return fmt.Errorf("PrimaryReady requires Completed handoff")
+	}
+	if h == nil {
+		return nil
+	}
+	if upgrade.Stage != databasev1.MysqlClusterUpgradeStageReplicasVerified && upgrade.Stage != databasev1.MysqlClusterUpgradeStagePrimaryReady {
+		return fmt.Errorf("handoff is invalid for the upgrade stage")
+	}
+	if strings.TrimSpace(h.OldPrimary) == "" || strings.TrimSpace(h.OldPrimaryUID) == "" || strings.TrimSpace(h.Candidate) == "" || strings.TrimSpace(h.CandidateUID) == "" || h.OldPrimary == h.Candidate || h.OldPrimaryUID == h.CandidateUID {
+		return fmt.Errorf("invalid durable handoff identities")
+	}
+	switch h.Stage {
+	case databasev1.MysqlClusterUpgradeHandoffStageFencing:
+		if h.OldPrimaryServerUUID != "" || h.OldPrimaryGTIDSet != nil {
+			return fmt.Errorf("Fencing cannot carry history proof")
+		}
+	case databasev1.MysqlClusterUpgradeHandoffStageFenceVerified, databasev1.MysqlClusterUpgradeHandoffStageCandidateReady, databasev1.MysqlClusterUpgradeHandoffStagePromoting, databasev1.MysqlClusterUpgradeHandoffStageReconfiguring, databasev1.MysqlClusterUpgradeHandoffStageCompleted:
+		if strings.TrimSpace(h.OldPrimaryServerUUID) == "" || h.OldPrimaryGTIDSet == nil {
+			return fmt.Errorf("post-fence handoff requires durable history proof")
+		}
+	default:
+		return fmt.Errorf("unknown durable handoff stage")
+	}
+	if h.Stage == databasev1.MysqlClusterUpgradeHandoffStageCompleted && upgrade.Stage != databasev1.MysqlClusterUpgradeStagePrimaryReady {
+		return fmt.Errorf("Completed handoff requires PrimaryReady")
 	}
 	return nil
 }
