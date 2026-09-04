@@ -43,6 +43,7 @@ func (r *MysqlClusterReconciler) reconcileMysqlObservability(
 	projected := cluster.DeepCopy()
 	projectMysqlObservability(projected, initialized, members, endpoints, metav1.Now())
 	if apiequality.Semantic.DeepEqual(cluster.Status, projected.Status) {
+		r.Metrics.syncStatus(cluster)
 		return false, nil
 	}
 	// Preserve every unrelated status field and reject stale generation/HA
@@ -50,6 +51,7 @@ func (r *MysqlClusterReconciler) reconcileMysqlObservability(
 	if err := r.Status().Patch(ctx, projected, client.MergeFromWithOptions(cluster, client.MergeFromWithOptimisticLock{})); err != nil {
 		return false, fmt.Errorf("failed to persist observability status on MysqlCluster %s/%s: %w", cluster.Namespace, cluster.Name, err)
 	}
+	r.Metrics.syncStatus(projected)
 	return true, nil
 }
 

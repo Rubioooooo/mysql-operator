@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-logr/logr" // 用于记录日志
 	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime" // 提供对象的通用机制，如序列化和版本转换
 	"k8s.io/client-go/tools/record"
 
@@ -26,6 +27,7 @@ type MysqlClusterReconciler struct {
 	Log                logr.Logger // 日志记录器
 	Scheme             *runtime.Scheme
 	Recorder           record.EventRecorder
+	Metrics            *MysqlClusterMetrics
 	MasterGTIDSnapshot string // 用于存储主库的 GTID 快照
 	SnapGoIsEnabled    bool   // 标识用于记录GTID快照的协程序是否启动，默认值为false，只有启动后才会设置为true
 	execCommandOnPodFn func(*v1.Pod, string) (string, error)
@@ -74,6 +76,9 @@ func (r *MysqlClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	var cluster databasev1.MysqlCluster
 	if err := r.Get(ctx, req.NamespacedName, &cluster); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.Metrics.deleteCluster(req.Namespace, req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	initialized, lifecycleErr := mysqlClusterIsInitialized(&cluster)

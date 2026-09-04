@@ -129,17 +129,25 @@ func TestMysqlHAEventMatrix(t *testing.T) {
 			cluster.Status.CredentialsSecretUID = "SENSITIVE-SECRET-UID"
 			cluster.Annotations["test-secret"] = "SENSITIVE-SQL"
 			r := phase1HReconciler(t, cluster)
+			metricOwner, metricRegistry := newMysqlMetricsForTest(t)
+			r.Metrics = metricOwner
 			memory := r.Client.(*statefulSetReconcileMemoryClient)
 			fake := record.NewFakeRecorder(10)
 			r.Recorder = &mysqlEventOrderRecorder{EventRecorder: fake, check: func(object runtime.Object) {
 				g.Expect(object).To(BeIdenticalTo(cluster))
 				g.Expect(memory.statusPatchCount).To(Equal(1))
 				g.Expect(phase4StoredCluster(t, r, cluster).Status.HA).To(Equal(tt.after))
+				expectMysqlTransitionMetric(t, metricRegistry, cluster, "ha_transitions_total", tt.reason, 1)
 			}}
 			changed, err := r.persistMysqlClusterHAStatus(context.Background(), cluster, tt.after)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(changed).To(BeTrue())
 			output := expectMysqlEvent(t, fake, tt.typeName, tt.reason)
+			wantCount := float64(0)
+			if tt.reason != "" {
+				wantCount = 1
+			}
+			expectMysqlTransitionMetric(t, metricRegistry, cluster, "ha_transitions_total", tt.reason, wantCount)
 			if tt.reason == "CandidateSelected" {
 				g.Expect(output).To(Equal("Normal CandidateSelected Selected mysql-2 as the failover candidate."))
 			}
@@ -149,6 +157,7 @@ func TestMysqlHAEventMatrix(t *testing.T) {
 			g.Expect(changed).To(BeFalse())
 			g.Expect(memory.statusPatchCount).To(Equal(1))
 			expectMysqlEvent(t, fake, "", "")
+			expectMysqlTransitionMetric(t, metricRegistry, cluster, "ha_transitions_total", tt.reason, wantCount)
 		})
 	}
 	// Counter/proof churn within the same milestone is a successful status
@@ -162,6 +171,8 @@ func TestMysqlHAEventMatrix(t *testing.T) {
 			cluster := phase1HCluster("same-milestone", true)
 			cluster.Status.HA = before.DeepCopy()
 			r := phase1HReconciler(t, cluster)
+			metricOwner, metricRegistry := newMysqlMetricsForTest(t)
+			r.Metrics = metricOwner
 			fake := record.NewFakeRecorder(10)
 			r.Recorder = fake
 			after := before.DeepCopy()
@@ -170,6 +181,7 @@ func TestMysqlHAEventMatrix(t *testing.T) {
 			NewWithT(t).Expect(err).NotTo(HaveOccurred())
 			NewWithT(t).Expect(changed).To(BeTrue())
 			expectMysqlEvent(t, fake, "", "")
+			expectMysqlTransitionMetric(t, metricRegistry, cluster, "ha_transitions_total", "", 0)
 		})
 	}
 }
@@ -198,6 +210,8 @@ func TestMysqlReplicaTransitionEvents(t *testing.T) {
 			cluster.Status.LastConvergedReplicas = nil
 			cluster.Status.ReplicaTransition = replicaTransitionCopy(tt.before)
 			r := phase1HReconciler(t, cluster)
+			metricOwner, metricRegistry := newMysqlMetricsForTest(t)
+			r.Metrics = metricOwner
 			fake := record.NewFakeRecorder(10)
 			r.Recorder = &mysqlEventOrderRecorder{EventRecorder: fake, check: func(runtime.Object) {
 				stored := phase4StoredCluster(t, r, cluster)
@@ -207,11 +221,17 @@ func TestMysqlReplicaTransitionEvents(t *testing.T) {
 			}}
 			g.Expect(r.persistMysqlClusterReplicaTransitionStatus(context.Background(), cluster, tt.checkpoint, tt.after)).To(Succeed())
 			output := expectMysqlEvent(t, fake, corev1.EventTypeNormal, tt.reason)
+			wantCount := float64(0)
+			if tt.reason != "" {
+				wantCount = 1
+			}
+			expectMysqlTransitionMetric(t, metricRegistry, cluster, "replica_transitions_total", tt.reason, wantCount)
 			if tt.reason != "" {
 				g.Expect(output).To(Equal("Normal " + tt.reason + " " + tt.message))
 			}
 			g.Expect(r.persistMysqlClusterReplicaTransitionStatus(context.Background(), cluster, tt.checkpoint, replicaTransitionCopy(tt.after))).To(Succeed())
 			expectMysqlEvent(t, fake, "", "")
+			expectMysqlTransitionMetric(t, metricRegistry, cluster, "replica_transitions_total", tt.reason, wantCount)
 		})
 	}
 }
@@ -224,6 +244,8 @@ func TestMysqlEventFailedPersistenceAndNilRecorder(t *testing.T) {
 				cluster := phase1HCluster("event-failure", true)
 				before := cluster.DeepCopy()
 				r := phase1HReconciler(t, cluster)
+				metricOwner, metricRegistry := newMysqlMetricsForTest(t)
+				r.Metrics = metricOwner
 				memory := r.Client.(*statefulSetReconcileMemoryClient)
 				fake := record.NewFakeRecorder(10)
 				if mode != "nil recorder" {
@@ -247,6 +269,15 @@ func TestMysqlEventFailedPersistenceAndNilRecorder(t *testing.T) {
 					g.Expect(phase4StoredCluster(t, r, cluster).Status).To(Equal(before.Status))
 				}
 				expectMysqlEvent(t, fake, "", "")
+				wantCount := float64(0)
+				if mode == "nil recorder" {
+					wantCount = 1
+				}
+				family, reason := "ha_transitions_total", "FailoverRequired"
+				if domain == "replicas" {
+					family, reason = "replica_transitions_total", "ReplicaTransitionStarted"
+				}
+				expectMysqlTransitionMetric(t, metricRegistry, cluster, family, reason, wantCount)
 			})
 		}
 	}
@@ -272,6 +303,8 @@ func TestMysqlEventDeliveryFailureDoesNotAffectPersistence(t *testing.T) {
 	g := NewWithT(t)
 	cluster := phase1HCluster("event-delivery", true)
 	r := phase1HReconciler(t, cluster)
+	metricOwner, metricRegistry := newMysqlMetricsForTest(t)
+	r.Metrics = metricOwner
 	broadcaster := record.NewBroadcaster()
 	defer broadcaster.Shutdown()
 	sink := &mysqlFailingEventSink{attempted: make(chan struct{}, 1)}
@@ -289,6 +322,7 @@ func TestMysqlEventDeliveryFailureDoesNotAffectPersistence(t *testing.T) {
 	}
 	g.Expect(phase4StoredCluster(t, r, cluster).Status.HA).To(Equal(desired))
 	g.Expect(r.Client.(*statefulSetReconcileMemoryClient).statusPatchCount).To(Equal(1))
+	expectMysqlTransitionMetric(t, metricRegistry, cluster, "ha_transitions_total", "FailoverRequired", 1)
 }
 
 func TestMysqlEventProjectionIsSilent(t *testing.T) {

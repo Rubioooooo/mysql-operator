@@ -19,6 +19,7 @@ func (r *MysqlClusterReconciler) recordMysqlEvent(cluster *databasev1.MysqlClust
 // milestones cannot emit multiple events for a single durable status write.
 func (r *MysqlClusterReconciler) emitMysqlHAStatusTransitionEvent(cluster *databasev1.MysqlCluster, before, after *databasev1.MysqlClusterHAStatus) {
 	eventType, reason, message := mysqlHAStatusTransitionEvent(before, after)
+	r.Metrics.incrementHA(cluster.Namespace, cluster.Name, reason)
 	r.recordMysqlEvent(cluster, eventType, reason, message)
 }
 
@@ -96,13 +97,20 @@ func mysqlHANoSafeCandidateEventState(status *databasev1.MysqlClusterHAStatus) b
 // Called only after the replica-transition patch succeeds. Compatibility
 // checkpoint initialization and repeated writes are deliberately silent.
 func (r *MysqlClusterReconciler) emitMysqlReplicaTransitionEvent(cluster *databasev1.MysqlCluster, before, after *databasev1.MysqlClusterStatus) {
+	reason, message := mysqlReplicaTransitionEvent(before, after)
+	r.Metrics.incrementReplica(cluster.Namespace, cluster.Name, reason)
+	r.recordMysqlEvent(cluster, corev1.EventTypeNormal, reason, message)
+}
+
+func mysqlReplicaTransitionEvent(before, after *databasev1.MysqlClusterStatus) (string, string) {
 	oldTransition, transition := before.ReplicaTransition, after.ReplicaTransition
 	switch {
 	case oldTransition == nil && transition != nil:
-		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, "ReplicaTransitionStarted", fmt.Sprintf("Replica transition started from %d to %d.", transition.FromReplicas, transition.TargetReplicas))
+		return "ReplicaTransitionStarted", fmt.Sprintf("Replica transition started from %d to %d.", transition.FromReplicas, transition.TargetReplicas)
 	case oldTransition != nil && transition != nil && oldTransition.TargetReplicas != transition.TargetReplicas:
-		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, "ReplicaTransitionRetargeted", fmt.Sprintf("Replica transition retargeted from %d to %d replicas.", oldTransition.TargetReplicas, transition.TargetReplicas))
+		return "ReplicaTransitionRetargeted", fmt.Sprintf("Replica transition retargeted from %d to %d replicas.", oldTransition.TargetReplicas, transition.TargetReplicas)
 	case oldTransition != nil && transition == nil && after.LastConvergedReplicas != nil && *after.LastConvergedReplicas == oldTransition.TargetReplicas:
-		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, "ReplicaTransitionCompleted", fmt.Sprintf("Replica transition completed at %d replicas.", *after.LastConvergedReplicas))
+		return "ReplicaTransitionCompleted", fmt.Sprintf("Replica transition completed at %d replicas.", *after.LastConvergedReplicas)
 	}
+	return "", ""
 }
