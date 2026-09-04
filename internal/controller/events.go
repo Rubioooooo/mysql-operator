@@ -1,0 +1,108 @@
+package controller
+
+import (
+	"fmt"
+
+	databasev1 "github.com/egonlin/api/v1"
+	corev1 "k8s.io/api/core/v1"
+)
+
+// EventRecorder delivers best-effort notifications and exposes no delivery
+// error to reconciliation. Events are never a persistence or control barrier.
+func (r *MysqlClusterReconciler) recordMysqlEvent(cluster *databasev1.MysqlCluster, eventType, reason, message string) {
+	if r.Recorder != nil && reason != "" {
+		r.Recorder.Event(cluster, eventType, reason, message)
+	}
+}
+
+// Called only after the HA status patch succeeds. Classify once so overlapping
+// milestones cannot emit multiple events for a single durable status write.
+func (r *MysqlClusterReconciler) emitMysqlHAStatusTransitionEvent(cluster *databasev1.MysqlCluster, before, after *databasev1.MysqlClusterHAStatus) {
+	eventType, reason, message := mysqlHAStatusTransitionEvent(before, after)
+	r.recordMysqlEvent(cluster, eventType, reason, message)
+}
+
+func mysqlHAStatusTransitionEvent(before, after *databasev1.MysqlClusterHAStatus) (string, string, string) {
+	if after == nil {
+		return "", "", ""
+	}
+	var beforeState databasev1.MysqlClusterHAState
+	var oldFailover *databasev1.MysqlClusterFailoverStatus
+	if before != nil {
+		beforeState, oldFailover = before.State, before.Failover
+	}
+	var oldStage databasev1.MysqlClusterFailoverStage
+	var oldFence databasev1.MysqlClusterFenceState
+	if oldFailover != nil {
+		oldStage, oldFence = oldFailover.Stage, oldFailover.FenceState
+	}
+	switch {
+	case beforeState != databasev1.MysqlClusterHAStateFailoverRequired && after.State == databasev1.MysqlClusterHAStateFailoverRequired:
+		return corev1.EventTypeWarning, "FailoverRequired", fmt.Sprintf("Failover is required for primary %s.", after.Primary)
+	case before != nil && beforeState != databasev1.MysqlClusterHAStateHealthy && after.State == databasev1.MysqlClusterHAStateHealthy:
+		return corev1.EventTypeNormal, "HARecovered", "HA health has recovered."
+	case after.State == databasev1.MysqlClusterHAStateVerifying && after.Failover == nil:
+		switch oldStage {
+		case databasev1.MysqlClusterFailoverStageReconfiguring:
+			return corev1.EventTypeNormal, "FailoverVerifying", "Failover replica reconfiguration has finished; verifying HA health."
+		case databasev1.MysqlClusterFailoverStageFencing:
+			return corev1.EventTypeNormal, "FailoverAborted", "Failover was aborted after primary recovery before fencing."
+		}
+	}
+	failover := after.Failover
+	if failover == nil {
+		return "", "", ""
+	}
+	sameAttempt := oldFailover != nil && oldFailover.FailedPrimary == failover.FailedPrimary && oldFailover.FailedPrimaryUID == failover.FailedPrimaryUID
+	// Loss/blockage and the no-safe-candidate result take precedence over
+	// their incidental proof clearing or stage changes. In particular a lost
+	// fence is not also a newly started failover or candidate invalidation.
+	switch {
+	case oldFence == databasev1.MysqlClusterFenceStateVerified && failover.FenceState == databasev1.MysqlClusterFenceStatePending:
+		return corev1.EventTypeWarning, "PrimaryFenceLost", fmt.Sprintf("Previously verified fencing for primary %s was lost.", failover.FailedPrimary)
+	case failover.FenceState == databasev1.MysqlClusterFenceStateBlocked && (!sameAttempt || oldFence != databasev1.MysqlClusterFenceStateBlocked):
+		return corev1.EventTypeWarning, "FailoverBlocked", "Failover is blocked pending safe fencing."
+	case mysqlHANoSafeCandidateEventState(after) && (!sameAttempt || !mysqlHANoSafeCandidateEventState(before)):
+		return corev1.EventTypeWarning, "NoSafeCandidate", "No safe failover candidate is available."
+	case oldStage == databasev1.MysqlClusterFailoverStageCandidateSelected && failover.Stage == databasev1.MysqlClusterFailoverStageFencing &&
+		failover.Candidate == "" && failover.CandidateUID == "" && failover.FailedPrimaryServerUUID == "" && failover.FailedPrimaryGTIDSet == nil:
+		return corev1.EventTypeWarning, "CandidateInvalidated", fmt.Sprintf("Failover candidate %s is no longer valid; returning to fencing.", oldFailover.Candidate)
+	case oldStage != databasev1.MysqlClusterFailoverStageCandidateSelected && failover.Stage == databasev1.MysqlClusterFailoverStageCandidateSelected:
+		return corev1.EventTypeNormal, "CandidateSelected", fmt.Sprintf("Selected %s as the failover candidate.", failover.Candidate)
+	case oldStage != databasev1.MysqlClusterFailoverStagePromoting && failover.Stage == databasev1.MysqlClusterFailoverStagePromoting:
+		return corev1.EventTypeNormal, "PromotionStarted", fmt.Sprintf("Promotion of failover candidate %s has started.", failover.Candidate)
+	case oldStage == databasev1.MysqlClusterFailoverStagePromoting && failover.Stage == databasev1.MysqlClusterFailoverStageReconfiguring &&
+		failover.Candidate != "" && failover.CandidateUID != "" && after.Primary == failover.Candidate && after.PrimaryUID == failover.CandidateUID:
+		return corev1.EventTypeNormal, "PrimaryPromoted", fmt.Sprintf("Primary %s has been promoted and its publication verified.", after.Primary)
+	case oldStage == databasev1.MysqlClusterFailoverStageReconfiguring && failover.Stage == databasev1.MysqlClusterFailoverStageReconfiguring &&
+		beforeState != databasev1.MysqlClusterHAStateDegraded && after.State == databasev1.MysqlClusterHAStateDegraded:
+		return corev1.EventTypeWarning, "UnsafeReplicaRejoin", "Replica rejoin is blocked by unsafe replication history."
+	case oldFence != databasev1.MysqlClusterFenceStateVerified && failover.FenceState == databasev1.MysqlClusterFenceStateVerified &&
+		failover.FencedPrimaryUID != "" && failover.FencedPrimaryUID == failover.FailedPrimaryUID:
+		return corev1.EventTypeNormal, "PrimaryFenced", fmt.Sprintf("Write fencing for primary %s has been verified.", failover.FailedPrimary)
+	case after.State == databasev1.MysqlClusterHAStateFailoverInProgress && failover.Stage == databasev1.MysqlClusterFailoverStageFencing &&
+		failover.FenceState == databasev1.MysqlClusterFenceStatePending && !sameAttempt:
+		return corev1.EventTypeNormal, "FailoverStarted", fmt.Sprintf("Failover fencing has started for primary %s.", failover.FailedPrimary)
+	}
+	return "", "", ""
+}
+
+func mysqlHANoSafeCandidateEventState(status *databasev1.MysqlClusterHAStatus) bool {
+	return status != nil && status.State == databasev1.MysqlClusterHAStateDegraded && status.Failover != nil &&
+		status.Failover.Stage == databasev1.MysqlClusterFailoverStageFencing &&
+		status.Failover.FenceState == databasev1.MysqlClusterFenceStateVerified && status.Failover.Candidate == ""
+}
+
+// Called only after the replica-transition patch succeeds. Compatibility
+// checkpoint initialization and repeated writes are deliberately silent.
+func (r *MysqlClusterReconciler) emitMysqlReplicaTransitionEvent(cluster *databasev1.MysqlCluster, before, after *databasev1.MysqlClusterStatus) {
+	oldTransition, transition := before.ReplicaTransition, after.ReplicaTransition
+	switch {
+	case oldTransition == nil && transition != nil:
+		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, "ReplicaTransitionStarted", fmt.Sprintf("Replica transition started from %d to %d.", transition.FromReplicas, transition.TargetReplicas))
+	case oldTransition != nil && transition != nil && oldTransition.TargetReplicas != transition.TargetReplicas:
+		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, "ReplicaTransitionRetargeted", fmt.Sprintf("Replica transition retargeted from %d to %d replicas.", oldTransition.TargetReplicas, transition.TargetReplicas))
+	case oldTransition != nil && transition == nil && after.LastConvergedReplicas != nil && *after.LastConvergedReplicas == oldTransition.TargetReplicas:
+		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, "ReplicaTransitionCompleted", fmt.Sprintf("Replica transition completed at %d replicas.", *after.LastConvergedReplicas))
+	}
+}

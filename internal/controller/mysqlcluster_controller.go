@@ -7,6 +7,7 @@ import (
 	"github.com/go-logr/logr" // 用于记录日志
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime" // 提供对象的通用机制，如序列化和版本转换
+	"k8s.io/client-go/tools/record"
 
 	"sigs.k8s.io/controller-runtime/pkg/client" // 提供与 Kubernetes API 交互的客户端
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -24,6 +25,7 @@ type MysqlClusterReconciler struct {
 	client.Client                  // 嵌入 client.Client 接口，用于与 Kubernetes API 交互
 	Log                logr.Logger // 日志记录器
 	Scheme             *runtime.Scheme
+	Recorder           record.EventRecorder
 	MasterGTIDSnapshot string // 用于存储主库的 GTID 快照
 	SnapGoIsEnabled    bool   // 标识用于记录GTID快照的协程序是否启动，默认值为false，只有启动后才会设置为true
 	execCommandOnPodFn func(*v1.Pod, string) (string, error)
@@ -61,7 +63,7 @@ func mysqlClusterIsInitialized(cluster *databasev1.MysqlCluster) (bool, error) {
 // +kubebuilder:rbac:groups="",resources=endpoints,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;get;list;watch;patch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch;create;update;delete
 

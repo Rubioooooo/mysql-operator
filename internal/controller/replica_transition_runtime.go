@@ -42,6 +42,7 @@ func (r *MysqlClusterReconciler) persistMysqlClusterReplicaTransitionStatus(
 			err,
 		)
 	}
+	r.emitMysqlReplicaTransitionEvent(cluster, &base.Status, &cluster.Status)
 	return nil
 }
 
