@@ -102,8 +102,8 @@ func TestMysqlClusterLifecycleAnnotationContract(t *testing.T) {
 				return "", nil
 			}
 
-			result, reconcileErr := reconciler.Reconcile(
-				ctx,
+			result, reconcileErr := reconcileAfterObservability(
+				ctx, reconciler,
 				ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)},
 			)
 			g.Expect(result).To(Equal(ctrl.Result{}))

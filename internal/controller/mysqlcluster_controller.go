@@ -78,6 +78,15 @@ func (r *MysqlClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if lifecycleErr != nil {
 		return ctrl.Result{}, lifecycleErr
 	}
+	projected, projectionErr := r.reconcileMysqlObservability(ctx, &cluster, initialized)
+	if projectionErr != nil {
+		return ctrl.Result{}, projectionErr
+	}
+	if projected {
+		// This iteration only publishes observations. The next iteration
+		// executes the unchanged lifecycle/HA path with fresh durable state.
+		return ctrl.Result{Requeue: true}, nil
+	}
 
 	var (
 		result   ctrl.Result
@@ -119,6 +128,10 @@ func (r *MysqlClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&v1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(r.mapMysqlStatefulSetPodToMysqlCluster),
+		).
+		Watches(
+			&v1.Endpoints{},
+			handler.EnqueueRequestsFromMapFunc(r.mapMysqlPrimaryEndpointsToMysqlClusters),
 		).
 		Complete(r)
 }

@@ -217,7 +217,7 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		deferStatefulSetRuntimeResourceCleanup(cluster)
 		reconciler := statefulSetEnvtestReconciler()
 
-		result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)})
+		result, err := reconcileAfterObservability(ctx, reconciler, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(ctrl.Result{}))
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
@@ -247,7 +247,7 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		createLegacyRuntimePod(ctx, cluster, "legacy-uninitialized")
 		reconciler := statefulSetEnvtestReconciler()
 
-		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)})
+		_, err := reconcileAfterObservability(ctx, reconciler, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)})
 		Expect(err).To(MatchError(ContainSubstring("automatic in-place migration to StatefulSet is unsupported")))
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 
@@ -262,7 +262,7 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		createLegacyRuntimePod(ctx, cluster, "legacy-initialized")
 		reconciler := statefulSetEnvtestReconciler()
 
-		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)})
+		_, err := reconcileAfterObservability(ctx, reconciler, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)})
 		Expect(err).To(MatchError(ContainSubstring("automatic in-place migration to StatefulSet is unsupported")))
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 		expectRuntimeObjectNotFound(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: mysqlStatefulSetName(cluster)}, &appsv1.StatefulSet{})
@@ -277,14 +277,14 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)}
 
 		By("persisting the legacy compatibility checkpoint and transition before child mutation")
-		_, err := reconciler.Reconcile(ctx, request)
+		_, err := reconcileAfterObservability(ctx, reconciler, request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 		expectStatefulSetRuntimeTransition(ctx, cluster, 2, 2, 3)
 		statefulSet = expectStatefulSetRuntimeReplicas(ctx, statefulSet, 2)
 
 		By("mutating the StatefulSet only on the next reconciliation")
-		_, err = reconciler.Reconcile(ctx, request)
+		_, err = reconcileAfterObservability(ctx, reconciler, request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 		expectStatefulSetRuntimeTransition(ctx, cluster, 2, 2, 3)
@@ -296,7 +296,7 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		createStatefulSetRuntimePod(ctx, cluster, statefulSet, 3, "slave")
 
 		By("entering domain reconciliation only after the scale-up delta is ready")
-		_, err = reconciler.Reconcile(ctx, request)
+		_, err = reconcileAfterObservability(ctx, reconciler, request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 		observedCluster := &databasev1.MysqlCluster{}
@@ -316,14 +316,14 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)}
 
 		By("persisting the legacy compatibility checkpoint and transition before child mutation")
-		_, err := reconciler.Reconcile(ctx, request)
+		_, err := reconcileAfterObservability(ctx, reconciler, request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 		expectStatefulSetRuntimeTransition(ctx, cluster, 4, 4, 3)
 		statefulSet = expectStatefulSetRuntimeReplicas(ctx, statefulSet, 4)
 
 		By("running primary safety and reducing the StatefulSet on the next reconciliation")
-		_, err = reconciler.Reconcile(ctx, request)
+		_, err = reconcileAfterObservability(ctx, reconciler, request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 		expectStatefulSetRuntimeTransition(ctx, cluster, 4, 4, 3)
@@ -337,7 +337,7 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		expectRuntimeObjectNotFound(ctx, ordinal4Key, &corev1.Pod{})
 
 		By("entering domain reconciliation only after the scale-down delta is gone")
-		_, err = reconciler.Reconcile(ctx, request)
+		_, err = reconcileAfterObservability(ctx, reconciler, request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 		observedCluster := &databasev1.MysqlCluster{}
@@ -357,14 +357,14 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)}
 
 		By("persisting non-destructive transition intent on the first reconciliation")
-		_, err := reconciler.Reconcile(ctx, request)
+		_, err := reconcileAfterObservability(ctx, reconciler, request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 		expectStatefulSetRuntimeTransition(ctx, cluster, 4, 4, 3)
 		statefulSet = expectStatefulSetRuntimeReplicas(ctx, statefulSet, 4)
 
 		By("rejecting primary removal before child mutation on the second reconciliation")
-		_, err = reconciler.Reconcile(ctx, request)
+		_, err = reconcileAfterObservability(ctx, reconciler, request)
 		Expect(err).To(MatchError(ContainSubstring("scale-down would remove current Primary ordinal 4")))
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 		expectStatefulSetRuntimeTransition(ctx, cluster, 4, 4, 3)
