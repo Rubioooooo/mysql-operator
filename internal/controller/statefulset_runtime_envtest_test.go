@@ -36,6 +36,24 @@ func configureStatefulSetRuntimeCluster(
 	return cluster
 }
 
+// Legacy migration now has its own image-only persistence barrier before the
+// existing replica checkpoint. Keep the scale-transition tests explicit about
+// that ordering instead of silently consuming both writes in a retry helper.
+func expectRuntimeLegacyImageBarrier(ctx context.Context, reconciler *MysqlClusterReconciler, cluster *databasev1.MysqlCluster, statefulSet *appsv1.StatefulSet) {
+	By("persisting the legacy image checkpoint before the replica checkpoint")
+	version := statefulSet.ResourceVersion
+	_, err := reconcileAfterObservability(ctx, reconciler, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)})
+	Expect(err).NotTo(HaveOccurred())
+	stored := &databasev1.MysqlCluster{}
+	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cluster), stored)).To(Succeed())
+	Expect(stored.Status.LastConvergedImage).To(Equal(statefulSet.Spec.Template.Spec.Containers[0].Image))
+	Expect(stored.Status.LastConvergedReplicas).To(BeNil())
+	Expect(stored.Status.ReplicaTransition).To(BeNil())
+	Expect(stored.Status.Upgrade).To(BeNil())
+	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(statefulSet), statefulSet)).To(Succeed())
+	Expect(statefulSet.ResourceVersion).To(Equal(version))
+}
+
 func deferStatefulSetRuntimeResourceCleanup(cluster *databasev1.MysqlCluster) {
 	DeferCleanup(func() {
 		ctx := context.Background()
@@ -276,7 +294,8 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		reconciler := statefulSetEnvtestReconciler()
 		request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)}
 
-		By("persisting the legacy compatibility checkpoint and transition before child mutation")
+		expectRuntimeLegacyImageBarrier(ctx, reconciler, cluster, statefulSet)
+		By("persisting the legacy replica checkpoint and transition before child mutation")
 		_, err := reconcileAfterObservability(ctx, reconciler, request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
@@ -315,7 +334,8 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		reconciler := statefulSetEnvtestReconciler()
 		request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)}
 
-		By("persisting the legacy compatibility checkpoint and transition before child mutation")
+		expectRuntimeLegacyImageBarrier(ctx, reconciler, cluster, statefulSet)
+		By("persisting the legacy replica checkpoint and transition before child mutation")
 		_, err := reconcileAfterObservability(ctx, reconciler, request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
@@ -356,14 +376,15 @@ var _ = Describe("StatefulSet runtime cutover real API-server integration", func
 		reconciler := statefulSetEnvtestReconciler()
 		request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)}
 
-		By("persisting non-destructive transition intent on the first reconciliation")
+		expectRuntimeLegacyImageBarrier(ctx, reconciler, cluster, statefulSet)
+		By("persisting non-destructive replica transition intent after the image checkpoint")
 		_, err := reconcileAfterObservability(ctx, reconciler, request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())
 		expectStatefulSetRuntimeTransition(ctx, cluster, 4, 4, 3)
 		statefulSet = expectStatefulSetRuntimeReplicas(ctx, statefulSet, 4)
 
-		By("rejecting primary removal before child mutation on the second reconciliation")
+		By("rejecting primary removal before child mutation after the replica checkpoint")
 		_, err = reconcileAfterObservability(ctx, reconciler, request)
 		Expect(err).To(MatchError(ContainSubstring("scale-down would remove current Primary ordinal 4")))
 		Expect(reconciler.SnapGoIsEnabled).To(BeFalse())

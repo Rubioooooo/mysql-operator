@@ -373,7 +373,19 @@ func (r *MysqlClusterReconciler) ensureMysqlStatefulSet(
 	ctx context.Context,
 	cluster *databasev1.MysqlCluster,
 ) (*appsv1.StatefulSet, error) {
-	desired := desiredMysqlStatefulSet(cluster)
+	image, err := mysqlStatefulSetEffectiveImage(cluster)
+	if err != nil {
+		return nil, err
+	}
+	return r.ensureMysqlStatefulSetWithImage(ctx, cluster, image)
+}
+
+func (r *MysqlClusterReconciler) ensureMysqlStatefulSetWithImage(
+	ctx context.Context,
+	cluster *databasev1.MysqlCluster,
+	image string,
+) (*appsv1.StatefulSet, error) {
+	desired := desiredMysqlStatefulSetWithImage(cluster, image)
 	existing := &appsv1.StatefulSet{}
 	key := client.ObjectKeyFromObject(desired)
 

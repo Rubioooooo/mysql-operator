@@ -104,7 +104,7 @@ func (r *MysqlClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if !initialized {
 		result, complete, err = r.reconcileStatefulSetInitialization(ctx, &cluster)
 	} else {
-		result, complete, err = r.reconcileStatefulSetRuntime(ctx, &cluster)
+		result, complete, err = r.reconcileMysqlUpgradeRuntime(ctx, &cluster)
 	}
 	if err != nil {
 		return result, err

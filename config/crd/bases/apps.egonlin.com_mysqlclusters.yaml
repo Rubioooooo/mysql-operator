@@ -398,6 +398,10 @@ spec:
                 - primaryUID
                 - state
                 type: object
+              lastConvergedImage:
+                description: LastConvergedImage is the image last proven common to
+                  the controlled workload.
+                type: string
               lastConvergedReplicas:
                 description: |-
                   LastConvergedReplicas is the replica count of the most recently completed
@@ -457,6 +461,29 @@ spec:
                 items:
                   type: string
                 type: array
+              upgrade:
+                description: Upgrade records an active durable image upgrade; TemplateReady
+                  is not completion.
+                properties:
+                  fromImage:
+                    minLength: 1
+                    type: string
+                  stage:
+                    description: MysqlClusterUpgradeStage describes the durable upgrade
+                      control barriers.
+                    enum:
+                    - Preparing
+                    - TemplatePending
+                    - TemplateReady
+                    type: string
+                  targetImage:
+                    minLength: 1
+                    type: string
+                required:
+                - fromImage
+                - stage
+                - targetImage
+                type: object
             type: object
             x-kubernetes-validations:
             - message: credentialsSecretUID is write-once and cannot be changed or

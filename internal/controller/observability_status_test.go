@@ -41,6 +41,25 @@ func expectMysqlObservability(t *testing.T, cluster *databasev1.MysqlCluster, ph
 	}
 }
 
+func TestUpgradeConditions(t *testing.T) {
+	g := NewWithT(t)
+	r, _, cluster := newUpgradeTest(t)
+	upgradeTestPlan(cluster, databasev1.MysqlClusterUpgradeStagePreparing)
+	members, err := r.listMysqlStatefulSetPods(context.Background(), cluster)
+	g.Expect(err).NotTo(HaveOccurred())
+	endpoints, err := r.observeMysqlPrimaryRoutingEndpoints(context.Background(), cluster)
+	g.Expect(err).NotTo(HaveOccurred())
+	before := cluster.Status.Upgrade.DeepCopy()
+	projectMysqlObservability(cluster, true, members, endpoints, metav1.Now())
+	g.Expect(meta.FindStatusCondition(cluster.Status.Conditions, mysqlConditionProgressing).Reason).To(Equal("UpgradeInProgress"))
+	g.Expect(meta.IsStatusConditionTrue(cluster.Status.Conditions, mysqlConditionProgressing)).To(BeTrue())
+	cluster.Spec.Image = "mysql:retarget"
+	projectMysqlObservability(cluster, true, members, endpoints, metav1.Now())
+	g.Expect(meta.FindStatusCondition(cluster.Status.Conditions, mysqlConditionDegraded).Reason).To(Equal("UpgradeTargetChanged"))
+	g.Expect(meta.IsStatusConditionTrue(cluster.Status.Conditions, mysqlConditionDegraded)).To(BeTrue())
+	g.Expect(cluster.Status.Upgrade).To(Equal(before))
+}
+
 func TestMysqlObservabilitySemanticMatrix(t *testing.T) {
 	tests := []struct {
 		name                             string
@@ -222,6 +241,8 @@ func TestMysqlObservabilityReconcileBarriersAndErrors(t *testing.T) {
 		t.Run("patch "+formatObservabilityError(patchErr), func(t *testing.T) {
 			g := NewWithT(t)
 			cluster := phase1HCluster("barrier", true)
+			// Isolate HA/observability barriers from legacy image migration.
+			cluster.Status.LastConvergedImage = cluster.Spec.Image
 			sts := phase1HStatefulSet(t, cluster)
 			pod := phase1HPod(t, cluster, sts, 1, "master", false)
 			cluster.Status.HA = phase5FencingHA(pod, databasev1.MysqlClusterFenceStatePending)

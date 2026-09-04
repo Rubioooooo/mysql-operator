@@ -84,6 +84,8 @@ func TestMysqlClusterLifecycleAnnotationContract(t *testing.T) {
 			}
 			if testCase.expectRuntimePath {
 				cluster.Status.LastConvergedReplicas = replicaCountCopy(desiredReplicas(cluster))
+				// This exercises initialized child recreation, not legacy migration.
+				cluster.Status.LastConvergedImage = cluster.Spec.Image
 			}
 
 			initialized, stateErr := mysqlClusterIsInitialized(cluster)

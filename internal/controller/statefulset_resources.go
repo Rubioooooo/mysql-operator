@@ -96,6 +96,10 @@ func desiredMysqlSharedConfigMap(cluster *databasev1.MysqlCluster) *corev1.Confi
 }
 
 func desiredMysqlStatefulSet(cluster *databasev1.MysqlCluster) *appsv1.StatefulSet {
+	return desiredMysqlStatefulSetWithImage(cluster, cluster.Spec.Image)
+}
+
+func desiredMysqlStatefulSetWithImage(cluster *databasev1.MysqlCluster, image string) *appsv1.StatefulSet {
 	replicas := desiredReplicas(cluster)
 	storageClassName := cluster.Spec.Storage.StorageClassName
 
@@ -126,7 +130,7 @@ func desiredMysqlStatefulSet(cluster *databasev1.MysqlCluster) *appsv1.StatefulS
 					InitContainers: []corev1.Container{
 						{
 							Name:    mysqlConfigInitName,
-							Image:   cluster.Spec.Image,
+							Image:   image,
 							Command: []string{"/bin/sh", "-ec", mysqlConfigInitScript},
 							Env: []corev1.EnvVar{
 								{
@@ -148,7 +152,7 @@ func desiredMysqlStatefulSet(cluster *databasev1.MysqlCluster) *appsv1.StatefulS
 					Containers: []corev1.Container{
 						{
 							Name:  mysqlContainerName,
-							Image: cluster.Spec.Image,
+							Image: image,
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    cluster.Spec.Resources.Requests.CPU,

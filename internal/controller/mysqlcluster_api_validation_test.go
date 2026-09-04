@@ -25,6 +25,43 @@ func int32PtrForTest(value int32) *int32 {
 	return &value
 }
 
+var _ = Describe("Phase 7-A upgrade API admission", func() {
+	It("round-trips each frozen stage and leaves mid-flight retarget to the controller", func() {
+		ctx := context.Background()
+		cluster := validMysqlClusterForAdmission("api-upgrade")
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		DeferCleanup(func() { cleanupMysqlClusterForAdmission(ctx, cluster) })
+		cluster.Status.LastConvergedImage = "mysql:old"
+		for _, stage := range []databasev1.MysqlClusterUpgradeStage{databasev1.MysqlClusterUpgradeStagePreparing, databasev1.MysqlClusterUpgradeStageTemplatePending, databasev1.MysqlClusterUpgradeStageTemplateReady} {
+			cluster.Status.Upgrade = &databasev1.MysqlClusterUpgradeStatus{FromImage: "mysql:old", TargetImage: "mysql:new", Stage: stage}
+			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
+			stored := &databasev1.MysqlCluster{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, stored)).To(Succeed())
+			Expect(stored.Status.Upgrade).To(Equal(cluster.Status.Upgrade))
+			Expect(stored.Status.LastConvergedImage).To(Equal("mysql:old"))
+			cluster = stored
+		}
+		cluster.Spec.Image = "mysql:retarget"
+		Expect(k8sClient.Update(ctx, cluster)).To(Succeed())
+		Expect(cluster.Status.Upgrade.TargetImage).To(Equal("mysql:new"))
+	})
+	It("rejects empty images and unknown durable stages", func() {
+		ctx := context.Background()
+		for i, upgrade := range []*databasev1.MysqlClusterUpgradeStatus{
+			{FromImage: "", TargetImage: "mysql:new", Stage: databasev1.MysqlClusterUpgradeStagePreparing},
+			{FromImage: "mysql:old", TargetImage: "", Stage: databasev1.MysqlClusterUpgradeStagePreparing},
+			{FromImage: "mysql:old", TargetImage: "mysql:new", Stage: "Unknown"},
+		} {
+			cluster := validMysqlClusterForAdmission(fmt.Sprintf("api-upgrade-invalid-%d", i))
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			DeferCleanup(func() { cleanupMysqlClusterForAdmission(ctx, cluster) })
+			cluster.Status.LastConvergedImage = "mysql:old"
+			cluster.Status.Upgrade = upgrade
+			Expect(apierrors.IsInvalid(k8sClient.Status().Update(ctx, cluster))).To(BeTrue())
+		}
+	})
+})
+
 func validMysqlClusterForAdmission(name string) *databasev1.MysqlCluster {
 	return &databasev1.MysqlCluster{
 		ObjectMeta: metav1.ObjectMeta{

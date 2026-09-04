@@ -91,7 +91,7 @@ func projectMysqlObservability(
 		status.Primary = primary.Name
 	}
 	available := status.Primary != "" && mysqlPublishedPrimaryRoutingAvailable(primary, endpoints)
-	progressing := !initialized || status.ReplicaTransition != nil
+	progressing := !initialized || status.ReplicaTransition != nil || status.Upgrade != nil
 	progressReason, progressMessage := "Stable", "No topology transition is in progress."
 	if !initialized {
 		progressReason, progressMessage = "Initializing", "Initial topology initialization is in progress."
@@ -100,6 +100,9 @@ func projectMysqlObservability(
 	}
 	degraded := initialized && (!available || mysqlObservabilityMembersDegraded(members, status.ReplicaTransition) || ambiguousRoles || published > 1)
 	degradedReason, degradedMessage := "Healthy", "No degradation is observed."
+	if status.Upgrade != nil {
+		progressReason, progressMessage = "UpgradeInProgress", "A durable image upgrade is in progress."
+	}
 	if degraded {
 		degradedReason, degradedMessage = "MemberUnavailable", "A primary or member is unavailable or has ambiguous role publication."
 	}
@@ -115,6 +118,10 @@ func projectMysqlObservability(
 			degraded = true
 			degradedReason, degradedMessage = "MemberUnavailable", "Observed membership differs from the converged topology."
 		}
+	}
+	if status.Upgrade != nil && cluster.Spec.Image != status.Upgrade.TargetImage {
+		degraded = true
+		degradedReason, degradedMessage = "UpgradeTargetChanged", "The requested image differs from the active durable upgrade target."
 	}
 	if ha := status.HA; ha != nil {
 		switch ha.State {

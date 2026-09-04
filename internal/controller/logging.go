@@ -7,6 +7,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+func mysqlSafeUpgradeLogValues(upgrade *databasev1.MysqlClusterUpgradeStatus) []interface{} {
+	if upgrade == nil {
+		return nil
+	}
+	return []interface{}{"operation", "upgrade_transition", "upgrade_stage", upgrade.Stage, "from_image", upgrade.FromImage, "target_image", upgrade.TargetImage}
+}
+
+func logMysqlUpgradeTransition(ctx context.Context, upgrade *databasev1.MysqlClusterUpgradeStatus) {
+	log.FromContext(ctx).Info("mysqlcluster upgrade barrier persisted", mysqlSafeUpgradeLogValues(upgrade)...)
+}
+
 // Explicit allowlist: never pass an HA/failover object to the logger. Those
 // objects also contain UID, server identity and replication proof material.
 func mysqlSafeHALogValues(status *databasev1.MysqlClusterHAStatus) []interface{} {

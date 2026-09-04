@@ -16,6 +16,19 @@ func (r *MysqlClusterReconciler) recordMysqlEvent(cluster *databasev1.MysqlClust
 	}
 }
 
+// Upgrade Events describe successfully persisted milestones only.
+func (r *MysqlClusterReconciler) emitMysqlUpgradeTransition(ctx context.Context, cluster *databasev1.MysqlCluster, before, after *databasev1.MysqlClusterUpgradeStatus) {
+	if after == nil || (before != nil && *before == *after) {
+		return
+	}
+	if before == nil && after.Stage == databasev1.MysqlClusterUpgradeStagePreparing {
+		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, "UpgradeStarted", "Durable image upgrade intent has been recorded.")
+	} else if before != nil && before.Stage == databasev1.MysqlClusterUpgradeStageTemplatePending && after.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady {
+		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, "UpgradeTemplateReady", "The target image template has been observed with OnDelete strategy.")
+	}
+	logMysqlUpgradeTransition(ctx, after)
+}
+
 // Called only after the HA status patch succeeds. Classify once so overlapping
 // milestones cannot emit multiple events for a single durable status write.
 func (r *MysqlClusterReconciler) emitMysqlHAStatusTransitionEvent(ctx context.Context, cluster *databasev1.MysqlCluster, before, after *databasev1.MysqlClusterHAStatus) {

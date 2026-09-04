@@ -101,6 +101,25 @@ type MysqlClusterReplicaTransitionStatus struct {
 	TargetReplicas int32 `json:"targetReplicas"`
 }
 
+// MysqlClusterUpgradeStage describes the durable upgrade control barriers.
+// +kubebuilder:validation:Enum=Preparing;TemplatePending;TemplateReady
+type MysqlClusterUpgradeStage string
+
+const (
+	MysqlClusterUpgradeStagePreparing       MysqlClusterUpgradeStage = "Preparing"
+	MysqlClusterUpgradeStageTemplatePending MysqlClusterUpgradeStage = "TemplatePending"
+	MysqlClusterUpgradeStageTemplateReady   MysqlClusterUpgradeStage = "TemplateReady"
+)
+
+// MysqlClusterUpgradeStatus preserves the original image intent across restarts.
+type MysqlClusterUpgradeStatus struct {
+	// +kubebuilder:validation:MinLength=1
+	FromImage string `json:"fromImage"`
+	// +kubebuilder:validation:MinLength=1
+	TargetImage string                   `json:"targetImage"`
+	Stage       MysqlClusterUpgradeStage `json:"stage"`
+}
+
 // MysqlClusterHAState describes the durable high-availability state machine.
 type MysqlClusterHAState string
 
@@ -226,6 +245,12 @@ type MysqlClusterStatus struct {
 	// LastConvergedReplicas is the replica count of the most recently completed
 	// stable lifecycle state.
 	LastConvergedReplicas *int32 `json:"lastConvergedReplicas,omitempty"`
+
+	// LastConvergedImage is the image last proven common to the controlled workload.
+	LastConvergedImage string `json:"lastConvergedImage,omitempty"`
+
+	// Upgrade records an active durable image upgrade; TemplateReady is not completion.
+	Upgrade *MysqlClusterUpgradeStatus `json:"upgrade,omitempty"`
 
 	// ReplicaTransition records an active replica-count transition. Nil means no
 	// replica-count transition is currently recorded.

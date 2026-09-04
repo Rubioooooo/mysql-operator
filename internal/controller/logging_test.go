@@ -81,6 +81,28 @@ func newMysqlLogContext(level int) (context.Context, *mysqlLogCapture) {
 	return log.IntoContext(context.Background(), logr.New(&mysqlCaptureLogSink{capture: capture, maxLevel: level})), capture
 }
 
+func TestUpgradeStructuredLogs(t *testing.T) {
+	g := NewWithT(t)
+	ctx, capture := newMysqlLogContext(0)
+	r, c, cluster := newUpgradeTest(t)
+	cluster.Spec.Image = "mysql:new"
+	storeUpgradeTestCluster(t, c, cluster)
+	c.statusPatchError = errors.New("SENSITIVE-STDERR SENSITIVE-SQL")
+	_, err := r.reconcileMysqlUpgradePreRuntime(ctx, cluster)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(capture.snapshot()).To(BeEmpty())
+	c.statusPatchError = nil
+	_, err = r.reconcileMysqlUpgradePreRuntime(ctx, cluster)
+	g.Expect(err).NotTo(HaveOccurred())
+	entries := capture.snapshot()
+	g.Expect(entries).To(HaveLen(1))
+	g.Expect(entries[0].Values).To(Equal(map[string]interface{}{
+		"operation": "upgrade_transition", "upgrade_stage": databasev1.MysqlClusterUpgradeStagePreparing,
+		"from_image": "mysql:old", "target_image": "mysql:new",
+	}))
+	expectMysqlSafeLogs(t, entries)
+}
+
 func mysqlSensitiveLogCluster() *databasev1.MysqlCluster {
 	cluster := phase1HCluster("logging-cluster", true)
 	cluster.UID = "SENSITIVE-CLUSTER-UID"
@@ -106,7 +128,7 @@ func expectMysqlSafeLogs(t *testing.T, entries []mysqlCapturedLog) {
 	rendered, err := json.Marshal(entries)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(string(rendered)).NotTo(ContainSubstring("SENSITIVE-"))
-	allowed := []string{"namespace", "cluster", "operation", "reason", "phase", "ha_state", "failover_stage", "fence_state", "primary", "candidate", "failed_primary", "desired_replicas", "current_replicas", "ready_replicas", "from_replicas", "target_replicas", "pod", "pods", "replicas", "failed_replicas"}
+	allowed := []string{"namespace", "cluster", "operation", "reason", "phase", "ha_state", "failover_stage", "fence_state", "primary", "candidate", "failed_primary", "desired_replicas", "current_replicas", "ready_replicas", "from_replicas", "target_replicas", "pod", "pods", "replicas", "failed_replicas", "upgrade_stage", "from_image", "target_image"}
 	for _, entry := range entries {
 		for key := range entry.Values {
 			g.Expect(key).To(BeElementOf(allowed))

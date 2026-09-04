@@ -2,9 +2,29 @@ package controller
 
 import (
 	"fmt"
+	"strings"
 
 	databasev1 "github.com/egonlin/api/v1"
 )
+
+func validateMysqlClusterUpgradeStatus(status *databasev1.MysqlClusterStatus) error {
+	upgrade := status.Upgrade
+	if upgrade == nil {
+		return nil
+	}
+	if strings.TrimSpace(status.LastConvergedImage) == "" || strings.TrimSpace(upgrade.FromImage) == "" || strings.TrimSpace(upgrade.TargetImage) == "" {
+		return fmt.Errorf("upgrade requires non-empty lastConvergedImage, fromImage and targetImage")
+	}
+	if upgrade.FromImage != status.LastConvergedImage || upgrade.FromImage == upgrade.TargetImage {
+		return fmt.Errorf("upgrade requires fromImage equal to lastConvergedImage and different from targetImage")
+	}
+	switch upgrade.Stage {
+	case databasev1.MysqlClusterUpgradeStagePreparing, databasev1.MysqlClusterUpgradeStageTemplatePending, databasev1.MysqlClusterUpgradeStageTemplateReady:
+		return nil
+	default:
+		return fmt.Errorf("unknown durable upgrade stage")
+	}
+}
 
 const defaultMysqlReplicas int32 = 3
 
