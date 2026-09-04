@@ -173,7 +173,7 @@ func (r *MysqlClusterReconciler) handleMasterFailure(ctx context.Context, cluste
 		return err
 	}
 
-	log.Info("选举出新主库", "newMasterName", newMasterName, "remainingSlaves", remainingSlaves)
+	log.V(1).Info("legacy primary election selected candidate", "operation", "election", "primary", newMasterName, "replicas", remainingSlaves)
 
 	// Promote and publish the new primary before changing the old primary role.
 	if err := r.setupMysqlPrimary(ctx, newMasterName, cluster); err != nil {
@@ -256,7 +256,7 @@ func (r *MysqlClusterReconciler) checkReplicaStatus(ctx context.Context, cluster
 		}
 	}
 
-	log.Info("主从状态检查完成", "主库", masterPodName, "状态失败的从库", failedReplicas)
+	log.V(1).Info("replication status observation completed", "operation", "replication_observation", "primary", masterPodName, "failed_replicas", failedReplicas)
 
 	// 返回主库名称和所有主从状态异常的从库名称
 	return masterPodName, failedReplicas, nil

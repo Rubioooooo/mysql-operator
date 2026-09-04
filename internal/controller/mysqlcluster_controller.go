@@ -71,8 +71,9 @@ func mysqlClusterIsInitialized(cluster *databasev1.MysqlCluster) (bool, error) {
 
 // 调谐函数
 func (r *MysqlClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-	log.Info("调谐函数触发执行", "req", req) // 额外增加1个字段
+	logger := log.FromContext(ctx).WithValues("namespace", req.Namespace, "cluster", req.Name)
+	ctx = log.IntoContext(ctx, logger)
+	logger.V(1).Info("reconcile started", "operation", "reconcile")
 
 	var cluster databasev1.MysqlCluster
 	if err := r.Get(ctx, req.NamespacedName, &cluster); err != nil {

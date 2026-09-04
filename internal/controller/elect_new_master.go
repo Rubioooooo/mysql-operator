@@ -9,6 +9,7 @@ import (
 
 	databasev1 "github.com/egonlin/api/v1" // 导入自定义的 MySQLCluster API 资源定义
 	v1 "k8s.io/api/core/v1"                // 核心 Kubernetes API 对象，例如 Pod 和 Service
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // 选主逻辑：
@@ -201,7 +202,7 @@ func (r *MysqlClusterReconciler) startAndUpdateGTIDSnapshot(ctx context.Context,
 			// 获取带有标签 role: master 的 Pod
 			err := r.List(ctx, podList, mysqlClusterPodListOptions(&cluster, "master")...)
 			if err != nil {
-				fmt.Printf("Error listing pods: %v\n", err)
+				log.FromContext(ctx).Error(err, "failed to list primary Pods for snapshot refresh", "operation", "gtid_snapshot")
 				time.Sleep(1 * time.Second) // 短暂的等待再重试
 				continue
 			}
@@ -218,9 +219,9 @@ func (r *MysqlClusterReconciler) startAndUpdateGTIDSnapshot(ctx context.Context,
 
 			// 更新主库的 GTID 快照
 			if err := r.updateMasterGTIDSnapshotFromPod(ctx, pod, &cluster); err != nil {
-				fmt.Printf("Error getting master GTID set: %v\n", err)
+				logMysqlGTIDSnapshotRefresh(ctx, false)
 			} else {
-				fmt.Printf("MasterGTIDSnapshot更新成功: %v\n", r.MasterGTIDSnapshot)
+				logMysqlGTIDSnapshotRefresh(ctx, true)
 			}
 
 			// 每隔 1 分钟更新一次

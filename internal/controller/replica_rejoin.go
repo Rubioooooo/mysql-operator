@@ -524,6 +524,7 @@ func (r *MysqlClusterReconciler) reconcileMysqlReconfiguringReplicas(
 	ctx context.Context,
 	cluster *databasev1.MysqlCluster,
 ) (ctrl.Result, bool, error) {
+	logMysqlControlBarrier(ctx, "rejoin", cluster)
 	if err := validateMysqlReconfiguringStatus(cluster); err != nil {
 		return ctrl.Result{}, false, err
 	}

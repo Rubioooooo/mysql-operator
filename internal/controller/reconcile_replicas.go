@@ -18,7 +18,7 @@ func (r *MysqlClusterReconciler) getActualReplicaInfo(ctx context.Context, clust
 
 	// 获取 Pod 列表
 	if err := r.List(ctx, podList, mysqlClusterPodListOptions(&cluster, "")...); err != nil {
-		log.Error(err, "获取 Pod 列表失败")
+		log.Error(err, "failed to list replica Pods", "operation", "replica_inventory")
 		return 0, nil
 	}
 
@@ -28,7 +28,7 @@ func (r *MysqlClusterReconciler) getActualReplicaInfo(ctx context.Context, clust
 		podNames = append(podNames, pod.Name)
 	}
 
-	log.Info("当前副本情况", "副本数", len(podList.Items), "PodNames", podNames, "预期副本数", desiredReplicas(&cluster))
+	log.V(1).Info("replica inventory observed", "operation", "replica_inventory", "current_replicas", len(podList.Items), "replicas", podNames, "desired_replicas", desiredReplicas(&cluster))
 
 	// 计算实际副本数
 	return int32(len(podList.Items)), podNames

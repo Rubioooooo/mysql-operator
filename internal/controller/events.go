@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 
 	databasev1 "github.com/egonlin/api/v1"
@@ -17,10 +18,11 @@ func (r *MysqlClusterReconciler) recordMysqlEvent(cluster *databasev1.MysqlClust
 
 // Called only after the HA status patch succeeds. Classify once so overlapping
 // milestones cannot emit multiple events for a single durable status write.
-func (r *MysqlClusterReconciler) emitMysqlHAStatusTransitionEvent(cluster *databasev1.MysqlCluster, before, after *databasev1.MysqlClusterHAStatus) {
+func (r *MysqlClusterReconciler) emitMysqlHAStatusTransitionEvent(ctx context.Context, cluster *databasev1.MysqlCluster, before, after *databasev1.MysqlClusterHAStatus) {
 	eventType, reason, message := mysqlHAStatusTransitionEvent(before, after)
 	r.Metrics.incrementHA(cluster.Namespace, cluster.Name, reason)
 	r.recordMysqlEvent(cluster, eventType, reason, message)
+	logMysqlHAStatusTransition(ctx, reason, after)
 }
 
 func mysqlHAStatusTransitionEvent(before, after *databasev1.MysqlClusterHAStatus) (string, string, string) {
@@ -96,10 +98,11 @@ func mysqlHANoSafeCandidateEventState(status *databasev1.MysqlClusterHAStatus) b
 
 // Called only after the replica-transition patch succeeds. Compatibility
 // checkpoint initialization and repeated writes are deliberately silent.
-func (r *MysqlClusterReconciler) emitMysqlReplicaTransitionEvent(cluster *databasev1.MysqlCluster, before, after *databasev1.MysqlClusterStatus) {
+func (r *MysqlClusterReconciler) emitMysqlReplicaTransitionEvent(ctx context.Context, cluster *databasev1.MysqlCluster, before, after *databasev1.MysqlClusterStatus) {
 	reason, message := mysqlReplicaTransitionEvent(before, after)
 	r.Metrics.incrementReplica(cluster.Namespace, cluster.Name, reason)
 	r.recordMysqlEvent(cluster, corev1.EventTypeNormal, reason, message)
+	logMysqlReplicaTransition(ctx, reason, before, after)
 }
 
 func mysqlReplicaTransitionEvent(before, after *databasev1.MysqlClusterStatus) (string, string) {

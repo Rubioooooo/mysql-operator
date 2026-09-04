@@ -315,6 +315,7 @@ func (r *MysqlClusterReconciler) reconcileMysqlGTIDElection(
 	ctx context.Context,
 	cluster *databasev1.MysqlCluster,
 ) (ctrl.Result, bool, error) {
+	logMysqlControlBarrier(ctx, "election", cluster)
 	failover := cluster.Status.HA.Failover
 	if failover.FenceState != databasev1.MysqlClusterFenceStateVerified ||
 		failover.FencedPrimaryUID != failover.FailedPrimaryUID {

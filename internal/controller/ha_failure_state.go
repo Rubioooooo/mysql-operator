@@ -222,7 +222,7 @@ func (r *MysqlClusterReconciler) persistMysqlClusterHAStatus(
 			err,
 		)
 	}
-	r.emitMysqlHAStatusTransitionEvent(cluster, base.Status.HA, cluster.Status.HA)
+	r.emitMysqlHAStatusTransitionEvent(ctx, cluster, base.Status.HA, cluster.Status.HA)
 	return true, nil
 }
 

@@ -52,6 +52,7 @@ func (r *MysqlClusterReconciler) reconcileMysqlObservability(
 		return false, fmt.Errorf("failed to persist observability status on MysqlCluster %s/%s: %w", cluster.Namespace, cluster.Name, err)
 	}
 	r.Metrics.syncStatus(projected)
+	logMysqlObservabilityProjection(ctx, projected)
 	return true, nil
 }
 

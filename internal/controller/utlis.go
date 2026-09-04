@@ -69,7 +69,7 @@ func mysqlShowSlaveGTIDCommand() string {
 // 制作主从同步的函数
 func (r *MysqlClusterReconciler) setupMasterSlaveReplication(ctx context.Context, masterName string, slaveNames []string, cluster databasev1.MysqlCluster) error {
 	log := log.FromContext(ctx)
-	log.Info("setupMasterSlaveReplication函数", "masterName", masterName, "slaveNames", slaveNames)
+	log.V(1).Info("legacy replication topology setup", "operation", "replication_setup", "primary", masterName, "replicas", slaveNames)
 	if err := r.setupMysqlPrimary(ctx, masterName, cluster); err != nil {
 		return err
 	}
@@ -349,7 +349,7 @@ func (r *MysqlClusterReconciler) getMasterPodNameFromEndpoints(ctx context.Conte
 	}
 
 	masterPodName := endpoints.Subsets[0].Addresses[0].TargetRef.Name
-	log.Info("从master-service的endpoints获取主pod名", "masterPodName", masterPodName)
+	log.V(1).Info("published primary observed from routing endpoints", "operation", "primary_observation", "primary", masterPodName)
 
 	// 返回第一个 Pod 名称
 	return masterPodName, nil

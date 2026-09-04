@@ -315,6 +315,7 @@ func (r *MysqlClusterReconciler) reconcileMysqlFailoverFencing(
 	ctx context.Context,
 	cluster *databasev1.MysqlCluster,
 ) (ctrl.Result, bool, error) {
+	logMysqlControlBarrier(ctx, "fencing", cluster)
 	if cluster.Status.HA == nil || cluster.Status.HA.Failover == nil {
 		return ctrl.Result{}, false, fmt.Errorf("active MySQL fencing requires durable failover status")
 	}

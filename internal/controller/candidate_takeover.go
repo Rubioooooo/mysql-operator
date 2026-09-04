@@ -244,6 +244,7 @@ func (r *MysqlClusterReconciler) reconcileMysqlCandidateTakeover(
 	ctx context.Context,
 	cluster *databasev1.MysqlCluster,
 ) (ctrl.Result, bool, error) {
+	logMysqlControlBarrier(ctx, "promotion", cluster)
 	if err := validateMysqlTakeoverStatus(cluster, databasev1.MysqlClusterFailoverStagePromoting); err != nil {
 		return ctrl.Result{}, false, err
 	}
