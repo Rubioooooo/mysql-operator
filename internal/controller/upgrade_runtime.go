@@ -17,7 +17,7 @@ func mysqlStatefulSetEffectiveImage(cluster *databasev1.MysqlCluster) (string, e
 		return "", err
 	}
 	if upgrade := cluster.Status.Upgrade; upgrade != nil {
-		if upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady {
+		if upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady || upgrade.Stage == databasev1.MysqlClusterUpgradeStageReplicasVerified {
 			return upgrade.TargetImage, nil
 		}
 		return upgrade.FromImage, nil
@@ -56,7 +56,7 @@ func (r *MysqlClusterReconciler) reconcileMysqlUpgradeRuntime(ctx context.Contex
 		return result, complete, nil
 	}
 	retargeted := before.Spec.Image != before.Status.Upgrade.TargetImage
-	if !retargeted && before.Status.Upgrade.Stage != databasev1.MysqlClusterUpgradeStagePreparing {
+	if !retargeted && before.Status.Upgrade.Stage != databasev1.MysqlClusterUpgradeStagePreparing && before.Status.Upgrade.Stage != databasev1.MysqlClusterUpgradeStageTemplateReady {
 		return result, complete, nil
 	}
 	// The existing runtime can persist HA through a value copy. A successful
@@ -67,6 +67,10 @@ func (r *MysqlClusterReconciler) reconcileMysqlUpgradeRuntime(ctx context.Contex
 	}
 	if fresh.ResourceVersion != before.ResourceVersion {
 		return ctrl.Result{Requeue: true}, false, nil
+	}
+	if !retargeted && fresh.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady {
+		err := r.reconcileMysqlUpgradeReplacementPostRuntime(ctx, fresh)
+		return ctrl.Result{RequeueAfter: mysqlReplicationRuntimeRequeueAfter}, false, err
 	}
 	_, safe, err := r.observeMysqlUpgradeSafety(ctx, fresh)
 	if err != nil || !safe {
@@ -110,6 +114,9 @@ func (r *MysqlClusterReconciler) reconcileMysqlUpgradePreRuntime(ctx context.Con
 		// before diagnosing retarget in post-runtime control. Never enter the
 		// upgrade-specific target-template mutation below for a retargeted plan.
 		return false, nil
+	}
+	if upgrade.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady && upgrade.Replacement != nil {
+		return r.reconcileMysqlUpgradeReplacementPreRuntime(ctx, cluster)
 	}
 	if upgrade.Stage != databasev1.MysqlClusterUpgradeStageTemplatePending {
 		return false, nil

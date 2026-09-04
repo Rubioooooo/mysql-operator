@@ -18,6 +18,11 @@ func logMysqlUpgradeTransition(ctx context.Context, upgrade *databasev1.MysqlClu
 	log.FromContext(ctx).Info("mysqlcluster upgrade barrier persisted", mysqlSafeUpgradeLogValues(upgrade)...)
 }
 
+func logMysqlUpgradeReplacement(ctx context.Context, replacement *databasev1.MysqlClusterUpgradeReplacementStatus) {
+	log.FromContext(ctx).Info("mysqlcluster replacement barrier persisted",
+		"operation", "upgrade_replacement", "replacement_stage", replacement.Stage, "ordinal", replacement.Ordinal)
+}
+
 // Explicit allowlist: never pass an HA/failover object to the logger. Those
 // objects also contain UID, server identity and replication proof material.
 func mysqlSafeHALogValues(status *databasev1.MysqlClusterHAStatus) []interface{} {

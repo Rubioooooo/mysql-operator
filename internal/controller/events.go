@@ -6,6 +6,7 @@ import (
 
 	databasev1 "github.com/egonlin/api/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 )
 
 // EventRecorder delivers best-effort notifications and exposes no delivery
@@ -18,7 +19,7 @@ func (r *MysqlClusterReconciler) recordMysqlEvent(cluster *databasev1.MysqlClust
 
 // Upgrade Events describe successfully persisted milestones only.
 func (r *MysqlClusterReconciler) emitMysqlUpgradeTransition(ctx context.Context, cluster *databasev1.MysqlCluster, before, after *databasev1.MysqlClusterUpgradeStatus) {
-	if after == nil || (before != nil && *before == *after) {
+	if after == nil || apiequality.Semantic.DeepEqual(before, after) {
 		return
 	}
 	if before == nil && after.Stage == databasev1.MysqlClusterUpgradeStagePreparing {
@@ -27,6 +28,33 @@ func (r *MysqlClusterReconciler) emitMysqlUpgradeTransition(ctx context.Context,
 		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, "UpgradeTemplateReady", "The target image template has been observed with OnDelete strategy.")
 	}
 	logMysqlUpgradeTransition(ctx, after)
+	reason := mysqlUpgradeReplacementEvent(before, after)
+	if reason != "" {
+		r.recordMysqlEvent(cluster, corev1.EventTypeNormal, reason, "Durable replica upgrade barrier has been persisted.")
+	}
+	if after.Replacement != nil {
+		logMysqlUpgradeReplacement(ctx, after.Replacement)
+	} else if before != nil && before.Replacement != nil {
+		logMysqlUpgradeReplacement(ctx, before.Replacement)
+	}
+}
+
+func mysqlUpgradeReplacementEvent(before, after *databasev1.MysqlClusterUpgradeStatus) string {
+	if before == nil || after == nil {
+		return ""
+	}
+	old, next := before.Replacement, after.Replacement
+	switch {
+	case before.Stage != databasev1.MysqlClusterUpgradeStageReplicasVerified && after.Stage == databasev1.MysqlClusterUpgradeStageReplicasVerified:
+		return "UpgradeReplicasVerified"
+	case old == nil && next != nil && next.Stage == databasev1.MysqlClusterUpgradeReplacementStageDeletePending:
+		return "UpgradeReplicaSelected"
+	case old != nil && next != nil && old.Stage == databasev1.MysqlClusterUpgradeReplacementStageWaitingForReplacement && next.Stage == databasev1.MysqlClusterUpgradeReplacementStageVerifying:
+		return "UpgradeReplicaObserved"
+	case old != nil && old.Stage == databasev1.MysqlClusterUpgradeReplacementStageVerifying && next == nil && after.Stage == databasev1.MysqlClusterUpgradeStageTemplateReady:
+		return "UpgradeReplicaVerified"
+	}
+	return ""
 }
 
 // Called only after the HA status patch succeeds. Classify once so overlapping

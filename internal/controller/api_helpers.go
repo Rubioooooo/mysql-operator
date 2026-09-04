@@ -19,11 +19,33 @@ func validateMysqlClusterUpgradeStatus(status *databasev1.MysqlClusterStatus) er
 		return fmt.Errorf("upgrade requires fromImage equal to lastConvergedImage and different from targetImage")
 	}
 	switch upgrade.Stage {
-	case databasev1.MysqlClusterUpgradeStagePreparing, databasev1.MysqlClusterUpgradeStageTemplatePending, databasev1.MysqlClusterUpgradeStageTemplateReady:
-		return nil
+	case databasev1.MysqlClusterUpgradeStagePreparing, databasev1.MysqlClusterUpgradeStageTemplatePending, databasev1.MysqlClusterUpgradeStageTemplateReady, databasev1.MysqlClusterUpgradeStageReplicasVerified:
 	default:
 		return fmt.Errorf("unknown durable upgrade stage")
 	}
+	replacement := upgrade.Replacement
+	if replacement == nil {
+		return nil
+	}
+	if upgrade.Stage != databasev1.MysqlClusterUpgradeStageTemplateReady {
+		return fmt.Errorf("replacement requires TemplateReady")
+	}
+	if replacement.Ordinal < 1 || strings.TrimSpace(replacement.PodName) == "" || strings.TrimSpace(replacement.OldPodUID) == "" {
+		return fmt.Errorf("replacement requires positive ordinal and non-empty Pod name and old identity")
+	}
+	switch replacement.Stage {
+	case databasev1.MysqlClusterUpgradeReplacementStageDeletePending, databasev1.MysqlClusterUpgradeReplacementStageWaitingForReplacement:
+		if replacement.NewPodUID != "" {
+			return fmt.Errorf("replacement new identity is only valid in Verifying")
+		}
+	case databasev1.MysqlClusterUpgradeReplacementStageVerifying:
+		if strings.TrimSpace(replacement.NewPodUID) == "" || replacement.NewPodUID == replacement.OldPodUID {
+			return fmt.Errorf("Verifying requires a different non-empty new identity")
+		}
+	default:
+		return fmt.Errorf("unknown durable replacement stage")
+	}
+	return nil
 }
 
 const defaultMysqlReplicas int32 = 3

@@ -468,6 +468,43 @@ spec:
                   fromImage:
                     minLength: 1
                     type: string
+                  replacement:
+                    description: MysqlClusterUpgradeReplacementStatus binds delete
+                      and verification to exact Pod incarnations.
+                    properties:
+                      newPodUID:
+                        type: string
+                      oldPodUID:
+                        minLength: 1
+                        type: string
+                      ordinal:
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      podName:
+                        minLength: 1
+                        type: string
+                      stage:
+                        description: MysqlClusterUpgradeReplacementStage describes
+                          one durable replica replacement.
+                        enum:
+                        - DeletePending
+                        - WaitingForReplacement
+                        - Verifying
+                        type: string
+                    required:
+                    - oldPodUID
+                    - ordinal
+                    - podName
+                    - stage
+                    type: object
+                    x-kubernetes-validations:
+                    - message: Verifying requires a different non-empty newPodUID
+                      rule: self.stage != 'Verifying' || (has(self.newPodUID) && self.newPodUID.size()
+                        > 0 && self.newPodUID != self.oldPodUID)
+                    - message: only Verifying may carry newPodUID
+                      rule: self.stage == 'Verifying' || !has(self.newPodUID) || self.newPodUID.size()
+                        == 0
                   stage:
                     description: MysqlClusterUpgradeStage describes the durable upgrade
                       control barriers.
@@ -475,6 +512,7 @@ spec:
                     - Preparing
                     - TemplatePending
                     - TemplateReady
+                    - ReplicasVerified
                     type: string
                   targetImage:
                     minLength: 1
@@ -484,6 +522,9 @@ spec:
                 - stage
                 - targetImage
                 type: object
+                x-kubernetes-validations:
+                - message: replacement requires TemplateReady
+                  rule: '!has(self.replacement) || self.stage == ''TemplateReady'''
             type: object
             x-kubernetes-validations:
             - message: credentialsSecretUID is write-once and cannot be changed or

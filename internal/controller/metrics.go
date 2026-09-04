@@ -11,13 +11,14 @@ import (
 // Only namespace and cluster are runtime label values. All remaining label
 // domains are fixed here, including the allowlists for Gate 2-B reasons.
 var (
-	mysqlMetricUpgradeStages  = []string{"Preparing", "TemplatePending", "TemplateReady"}
-	mysqlMetricPhases         = []string{"Pending", "Initializing", "Running", "Degraded", "Failed"}
-	mysqlMetricConditions     = []string{"Available", "Progressing", "Degraded"}
-	mysqlMetricHAStates       = []string{"Healthy", "Suspected", "FailoverRequired", "FailoverInProgress", "Verifying", "Degraded"}
-	mysqlMetricFailoverStages = []string{"Fencing", "CandidateSelected", "Promoting", "Reconfiguring"}
-	mysqlMetricFenceStates    = []string{"Pending", "Verified", "Blocked"}
-	mysqlMetricHATransitions  = []string{
+	mysqlMetricUpgradeStages     = []string{"Preparing", "TemplatePending", "TemplateReady", "ReplicasVerified"}
+	mysqlMetricReplacementStages = []string{"DeletePending", "WaitingForReplacement", "Verifying"}
+	mysqlMetricPhases            = []string{"Pending", "Initializing", "Running", "Degraded", "Failed"}
+	mysqlMetricConditions        = []string{"Available", "Progressing", "Degraded"}
+	mysqlMetricHAStates          = []string{"Healthy", "Suspected", "FailoverRequired", "FailoverInProgress", "Verifying", "Degraded"}
+	mysqlMetricFailoverStages    = []string{"Fencing", "CandidateSelected", "Promoting", "Reconfiguring"}
+	mysqlMetricFenceStates       = []string{"Pending", "Verified", "Blocked"}
+	mysqlMetricHATransitions     = []string{
 		"FailoverRequired", "FailoverStarted", "PrimaryFenced", "PrimaryFenceLost",
 		"FailoverBlocked", "NoSafeCandidate", "CandidateSelected", "CandidateInvalidated",
 		"PromotionStarted", "PrimaryPromoted", "UnsafeReplicaRejoin", "FailoverVerifying", "FailoverAborted", "HARecovered",
@@ -29,11 +30,12 @@ var (
 // or persistence and is safe to omit from a reconciler. Prometheus vectors handle
 // concurrent updates; no control operation depends on metric values.
 type MysqlClusterMetrics struct {
-	upgradeActive, upgradeStage                     *prometheus.GaugeVec
-	desiredReplicas, currentReplicas, readyReplicas *prometheus.GaugeVec
-	phase, condition, replicaTransitionActive       *prometheus.GaugeVec
-	haState, failoverStage, fenceState              *prometheus.GaugeVec
-	haTransitions, replicaTransitions               *prometheus.CounterVec
+	upgradeReplacementActive, upgradeReplacementStage *prometheus.GaugeVec
+	upgradeActive, upgradeStage                       *prometheus.GaugeVec
+	desiredReplicas, currentReplicas, readyReplicas   *prometheus.GaugeVec
+	phase, condition, replicaTransitionActive         *prometheus.GaugeVec
+	haState, failoverStage, fenceState                *prometheus.GaugeVec
+	haTransitions, replicaTransitions                 *prometheus.CounterVec
 }
 
 // NewMysqlClusterMetrics registers only with the supplied registerer. Duplicate
@@ -49,21 +51,24 @@ func NewMysqlClusterMetrics(registerer prometheus.Registerer) (*MysqlClusterMetr
 		return prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "mysql_operator", Subsystem: "mysqlcluster", Name: name, Help: help}, []string{"namespace", "cluster", "transition"})
 	}
 	m := &MysqlClusterMetrics{
-		upgradeActive:           gauge("upgrade_active", "Whether a durable image upgrade is active."),
-		upgradeStage:            gauge("upgrade_stage", "Current durable upgrade stage, as a one-hot gauge.", "stage"),
-		desiredReplicas:         gauge("desired_replicas", "Desired MySQL member count."),
-		currentReplicas:         gauge("current_replicas", "Current MySQL member count from persisted status."),
-		readyReplicas:           gauge("ready_replicas", "Ready MySQL member count from persisted status."),
-		phase:                   gauge("phase", "Current persisted cluster phase, as a one-hot gauge.", "phase"),
-		condition:               gauge("condition", "Whether a persisted cluster condition is True.", "condition"),
-		replicaTransitionActive: gauge("replica_transition_active", "Whether a durable replica transition is active."),
-		haState:                 gauge("ha_state", "Current durable HA state, as a one-hot gauge.", "state"),
-		failoverStage:           gauge("failover_stage", "Current durable failover stage, as a one-hot gauge.", "stage"),
-		fenceState:              gauge("fence_state", "Current durable fence state, as a one-hot gauge.", "state"),
-		haTransitions:           counter("ha_transitions_total", "High-signal HA transitions successfully persisted in this process."),
-		replicaTransitions:      counter("replica_transitions_total", "Replica transitions successfully persisted in this process."),
+		upgradeReplacementActive: gauge("upgrade_replacement_active", "Whether a durable replica replacement is active."),
+		upgradeReplacementStage:  gauge("upgrade_replacement_stage", "Durable replica replacement stage, as a one-hot gauge.", "stage"),
+		upgradeActive:            gauge("upgrade_active", "Whether a durable image upgrade is active."),
+		upgradeStage:             gauge("upgrade_stage", "Current durable upgrade stage, as a one-hot gauge.", "stage"),
+		desiredReplicas:          gauge("desired_replicas", "Desired MySQL member count."),
+		currentReplicas:          gauge("current_replicas", "Current MySQL member count from persisted status."),
+		readyReplicas:            gauge("ready_replicas", "Ready MySQL member count from persisted status."),
+		phase:                    gauge("phase", "Current persisted cluster phase, as a one-hot gauge.", "phase"),
+		condition:                gauge("condition", "Whether a persisted cluster condition is True.", "condition"),
+		replicaTransitionActive:  gauge("replica_transition_active", "Whether a durable replica transition is active."),
+		haState:                  gauge("ha_state", "Current durable HA state, as a one-hot gauge.", "state"),
+		failoverStage:            gauge("failover_stage", "Current durable failover stage, as a one-hot gauge.", "stage"),
+		fenceState:               gauge("fence_state", "Current durable fence state, as a one-hot gauge.", "state"),
+		haTransitions:            counter("ha_transitions_total", "High-signal HA transitions successfully persisted in this process."),
+		replicaTransitions:       counter("replica_transitions_total", "Replica transitions successfully persisted in this process."),
 	}
 	collectors := []prometheus.Collector{m.desiredReplicas, m.currentReplicas, m.readyReplicas, m.phase, m.condition, m.replicaTransitionActive, m.haState, m.failoverStage, m.fenceState, m.haTransitions, m.replicaTransitions, m.upgradeActive, m.upgradeStage}
+	collectors = append(collectors, m.upgradeReplacementActive, m.upgradeReplacementStage)
 	for i, collector := range collectors {
 		if err := registerer.Register(collector); err != nil {
 			// Undo only this constructor's registrations, leaving any existing
@@ -90,6 +95,13 @@ func (m *MysqlClusterMetrics) syncStatus(cluster *databasev1.MysqlCluster) {
 		upgradeStage = string(cluster.Status.Upgrade.Stage)
 	}
 	setMysqlMetricOneHot(m.upgradeStage, namespace, name, mysqlMetricUpgradeStages, upgradeStage)
+	replacementStage := ""
+	replacementActive := cluster.Status.Upgrade != nil && cluster.Status.Upgrade.Replacement != nil
+	if replacementActive {
+		replacementStage = string(cluster.Status.Upgrade.Replacement.Stage)
+	}
+	m.upgradeReplacementActive.WithLabelValues(namespace, name).Set(mysqlMetricBool(replacementActive))
+	setMysqlMetricOneHot(m.upgradeReplacementStage, namespace, name, mysqlMetricReplacementStages, replacementStage)
 	m.desiredReplicas.WithLabelValues(namespace, name).Set(float64(desiredReplicas(cluster)))
 	m.currentReplicas.WithLabelValues(namespace, name).Set(float64(cluster.Status.CurrentReplicas))
 	m.readyReplicas.WithLabelValues(namespace, name).Set(float64(cluster.Status.ReadyReplicas))
@@ -157,6 +169,8 @@ func (m *MysqlClusterMetrics) deleteCluster(namespace, cluster string) {
 	}
 	deleteMysqlMetricDomain(m.phase, namespace, cluster, mysqlMetricPhases)
 	deleteMysqlMetricDomain(m.upgradeStage, namespace, cluster, mysqlMetricUpgradeStages)
+	m.upgradeReplacementActive.DeleteLabelValues(namespace, cluster)
+	deleteMysqlMetricDomain(m.upgradeReplacementStage, namespace, cluster, mysqlMetricReplacementStages)
 	deleteMysqlMetricDomain(m.condition, namespace, cluster, mysqlMetricConditions)
 	deleteMysqlMetricDomain(m.haState, namespace, cluster, mysqlMetricHAStates)
 	deleteMysqlMetricDomain(m.failoverStage, namespace, cluster, mysqlMetricFailoverStages)

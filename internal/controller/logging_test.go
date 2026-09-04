@@ -81,6 +81,19 @@ func newMysqlLogContext(level int) (context.Context, *mysqlLogCapture) {
 	return log.IntoContext(context.Background(), logr.New(&mysqlCaptureLogSink{capture: capture, maxLevel: level})), capture
 }
 
+func TestUpgradeReplacementLoggingSafety(t *testing.T) {
+	g := NewWithT(t)
+	ctx, capture := newMysqlLogContext(0)
+	logMysqlUpgradeReplacement(ctx, &databasev1.MysqlClusterUpgradeReplacementStatus{Ordinal: 2, Stage: databasev1.MysqlClusterUpgradeReplacementStageVerifying, PodName: "SENSITIVE-POD", OldPodUID: "SENSITIVE-OLD", NewPodUID: "SENSITIVE-NEW"})
+	entries := capture.snapshot()
+	g.Expect(entries).To(HaveLen(1))
+	g.Expect(entries[0].Values).To(Equal(map[string]interface{}{"operation": "upgrade_replacement", "replacement_stage": databasev1.MysqlClusterUpgradeReplacementStageVerifying, "ordinal": int32(2)}))
+	expectMysqlSafeLogs(t, entries)
+	deleteErr := &mysqlUpgradeDeleteError{cause: errors.New("SENSITIVE-POD-UID SENSITIVE-SERVER-UUID")}
+	g.Expect(deleteErr.Error()).NotTo(ContainSubstring("SENSITIVE-"))
+	g.Expect(errors.Unwrap(deleteErr)).To(Equal(deleteErr.cause))
+}
+
 func TestUpgradeStructuredLogs(t *testing.T) {
 	g := NewWithT(t)
 	ctx, capture := newMysqlLogContext(0)
@@ -128,7 +141,7 @@ func expectMysqlSafeLogs(t *testing.T, entries []mysqlCapturedLog) {
 	rendered, err := json.Marshal(entries)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(string(rendered)).NotTo(ContainSubstring("SENSITIVE-"))
-	allowed := []string{"namespace", "cluster", "operation", "reason", "phase", "ha_state", "failover_stage", "fence_state", "primary", "candidate", "failed_primary", "desired_replicas", "current_replicas", "ready_replicas", "from_replicas", "target_replicas", "pod", "pods", "replicas", "failed_replicas", "upgrade_stage", "from_image", "target_image"}
+	allowed := []string{"namespace", "cluster", "operation", "reason", "phase", "ha_state", "failover_stage", "fence_state", "primary", "candidate", "failed_primary", "desired_replicas", "current_replicas", "ready_replicas", "from_replicas", "target_replicas", "pod", "pods", "replicas", "failed_replicas", "upgrade_stage", "from_image", "target_image", "replacement_stage", "ordinal"}
 	for _, entry := range entries {
 		for key := range entry.Values {
 			g.Expect(key).To(BeElementOf(allowed))

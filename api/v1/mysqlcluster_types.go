@@ -102,22 +102,49 @@ type MysqlClusterReplicaTransitionStatus struct {
 }
 
 // MysqlClusterUpgradeStage describes the durable upgrade control barriers.
-// +kubebuilder:validation:Enum=Preparing;TemplatePending;TemplateReady
+// +kubebuilder:validation:Enum=Preparing;TemplatePending;TemplateReady;ReplicasVerified
 type MysqlClusterUpgradeStage string
 
 const (
-	MysqlClusterUpgradeStagePreparing       MysqlClusterUpgradeStage = "Preparing"
-	MysqlClusterUpgradeStageTemplatePending MysqlClusterUpgradeStage = "TemplatePending"
-	MysqlClusterUpgradeStageTemplateReady   MysqlClusterUpgradeStage = "TemplateReady"
+	MysqlClusterUpgradeStagePreparing        MysqlClusterUpgradeStage = "Preparing"
+	MysqlClusterUpgradeStageTemplatePending  MysqlClusterUpgradeStage = "TemplatePending"
+	MysqlClusterUpgradeStageTemplateReady    MysqlClusterUpgradeStage = "TemplateReady"
+	MysqlClusterUpgradeStageReplicasVerified MysqlClusterUpgradeStage = "ReplicasVerified"
 )
 
 // MysqlClusterUpgradeStatus preserves the original image intent across restarts.
+// +kubebuilder:validation:XValidation:rule="!has(self.replacement) || self.stage == 'TemplateReady'",message="replacement requires TemplateReady"
 type MysqlClusterUpgradeStatus struct {
 	// +kubebuilder:validation:MinLength=1
 	FromImage string `json:"fromImage"`
 	// +kubebuilder:validation:MinLength=1
-	TargetImage string                   `json:"targetImage"`
-	Stage       MysqlClusterUpgradeStage `json:"stage"`
+	TargetImage string                                `json:"targetImage"`
+	Stage       MysqlClusterUpgradeStage              `json:"stage"`
+	Replacement *MysqlClusterUpgradeReplacementStatus `json:"replacement,omitempty"`
+}
+
+// MysqlClusterUpgradeReplacementStage describes one durable replica replacement.
+// +kubebuilder:validation:Enum=DeletePending;WaitingForReplacement;Verifying
+type MysqlClusterUpgradeReplacementStage string
+
+const (
+	MysqlClusterUpgradeReplacementStageDeletePending         MysqlClusterUpgradeReplacementStage = "DeletePending"
+	MysqlClusterUpgradeReplacementStageWaitingForReplacement MysqlClusterUpgradeReplacementStage = "WaitingForReplacement"
+	MysqlClusterUpgradeReplacementStageVerifying             MysqlClusterUpgradeReplacementStage = "Verifying"
+)
+
+// MysqlClusterUpgradeReplacementStatus binds delete and verification to exact Pod incarnations.
+// +kubebuilder:validation:XValidation:rule="self.stage != 'Verifying' || (has(self.newPodUID) && self.newPodUID.size() > 0 && self.newPodUID != self.oldPodUID)",message="Verifying requires a different non-empty newPodUID"
+// +kubebuilder:validation:XValidation:rule="self.stage == 'Verifying' || !has(self.newPodUID) || self.newPodUID.size() == 0",message="only Verifying may carry newPodUID"
+type MysqlClusterUpgradeReplacementStatus struct {
+	// +kubebuilder:validation:Minimum=1
+	Ordinal int32 `json:"ordinal"`
+	// +kubebuilder:validation:MinLength=1
+	PodName string `json:"podName"`
+	// +kubebuilder:validation:MinLength=1
+	OldPodUID string                              `json:"oldPodUID"`
+	NewPodUID string                              `json:"newPodUID,omitempty"`
+	Stage     MysqlClusterUpgradeReplacementStage `json:"stage"`
 }
 
 // MysqlClusterHAState describes the durable high-availability state machine.
