@@ -75,6 +75,7 @@ spec:
                 default: 3
                 description: Replicas is the desired number of MySQL members.
                 format: int32
+                maximum: 64
                 minimum: 1
                 type: integer
               resources:
@@ -278,6 +279,62 @@ spec:
                   observed.
                 format: int32
                 type: integer
+              gtidBootstrap:
+                description: |-
+                  GTIDBootstrap is the immutable, append-only identity and instance-local
+                  bootstrap history for every ordinal ever admitted to this cluster.
+                  Historical entries are retained after scale-down.
+                items:
+                  description: |-
+                    MysqlClusterGTIDBootstrapStatus binds one StatefulSet ordinal and persistent
+                    data volume to its MySQL instance identity and instance-local bootstrap GTIDs.
+                  properties:
+                    bootstrapGTIDSet:
+                      description: |-
+                        BootstrapGTIDSet is the raw instance-local GTID set captured before the
+                        member is attached to replication. Empty is authoritative and valid.
+                      maxLength: 262144
+                      type: string
+                    ordinal:
+                      description: Ordinal is the canonical one-based StatefulSet
+                        member ordinal.
+                      format: int32
+                      maximum: 64
+                      minimum: 1
+                      type: integer
+                    pvcUID:
+                      description: PVCUID is the immutable Kubernetes UID of the member's
+                        data PVC.
+                      maxLength: 128
+                      minLength: 1
+                      type: string
+                    serverUUID:
+                      description: ServerUUID is the MySQL instance UUID stored on
+                        that persistent volume.
+                      maxLength: 36
+                      minLength: 36
+                      pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                      type: string
+                  required:
+                  - bootstrapGTIDSet
+                  - ordinal
+                  - pvcUID
+                  - serverUUID
+                  type: object
+                  x-kubernetes-validations:
+                  - message: GTID bootstrap ordinal is immutable
+                    rule: self.ordinal == oldSelf.ordinal
+                  - message: GTID bootstrap PVC UID is immutable
+                    rule: self.pvcUID == oldSelf.pvcUID
+                  - message: GTID bootstrap server UUID is immutable
+                    rule: self.serverUUID == oldSelf.serverUUID
+                  - message: GTID bootstrap GTID set is immutable
+                    rule: self.bootstrapGTIDSet == oldSelf.bootstrapGTIDSet
+                maxItems: 64
+                type: array
+                x-kubernetes-list-map-keys:
+                - ordinal
+                x-kubernetes-list-type: map
               ha:
                 description: HA records durable primary-failure observations and failover
                   progress.
@@ -407,6 +464,8 @@ spec:
                   LastConvergedReplicas is the replica count of the most recently completed
                   stable lifecycle state.
                 format: int32
+                maximum: 64
+                minimum: 1
                 type: integer
               master:
                 description: |-
@@ -444,11 +503,15 @@ spec:
                     description: FromReplicas is the last stable replica count from
                       which the transition began.
                     format: int32
+                    maximum: 64
+                    minimum: 1
                     type: integer
                   targetReplicas:
                     description: TargetReplicas is the current desired replica count
                       for the transition.
                     format: int32
+                    maximum: 64
+                    minimum: 1
                     type: integer
                 required:
                 - fromReplicas
@@ -527,6 +590,7 @@ spec:
                         type: string
                       ordinal:
                         format: int32
+                        maximum: 64
                         minimum: 1
                         type: integer
                       podName:
@@ -590,6 +654,18 @@ spec:
                 cleared
               rule: '!has(oldSelf.credentialsSecretUID) || (has(self.credentialsSecretUID)
                 && self.credentialsSecretUID == oldSelf.credentialsSecretUID)'
+            - message: gtidBootstrap entries cannot be removed
+              rule: '!has(oldSelf.gtidBootstrap) || (has(self.gtidBootstrap) && self.gtidBootstrap.size()
+                >= oldSelf.gtidBootstrap.size())'
+            - message: gtidBootstrap ordinals must be canonical and contiguous
+              rule: '!has(self.gtidBootstrap) || self.gtidBootstrap.all(entry, entry.ordinal
+                <= self.gtidBootstrap.size())'
+            - message: gtidBootstrap pvcUID values must be unique
+              rule: '!has(self.gtidBootstrap) || self.gtidBootstrap.all(entry, self.gtidBootstrap.filter(other,
+                other.pvcUID == entry.pvcUID).size() == 1)'
+            - message: gtidBootstrap serverUUID values must be unique
+              rule: '!has(self.gtidBootstrap) || self.gtidBootstrap.all(entry, self.gtidBootstrap.filter(other,
+                other.serverUUID == entry.serverUUID).size() == 1)'
         type: object
     served: true
     storage: true

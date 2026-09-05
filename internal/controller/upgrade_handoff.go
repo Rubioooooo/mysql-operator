@@ -88,6 +88,9 @@ func (r *MysqlClusterReconciler) observeMysqlHandoff(ctx context.Context, cluste
 		if err != nil {
 			return nil, fmt.Errorf("handoff history observation failed")
 		}
+		if err := r.validateMysqlGTIDBootstrapIdentity(ctx, cluster, pod, reference.ServerUUID); err != nil {
+			return nil, fmt.Errorf("handoff persistent identity is invalid")
+		}
 		replication, err := r.observeMysqlMemberReplication(ctx, pod, cluster)
 		if err != nil {
 			return nil, fmt.Errorf("handoff replication observation failed")
@@ -113,6 +116,10 @@ func (r *MysqlClusterReconciler) recheckMysqlHandoffIdentities(ctx context.Conte
 		image, imageErr := mysqlWorkloadImage(&member.Pod.Spec)
 		if member.Ordinal != before.member.Ordinal || member.Pod.Name != before.member.Pod.Name || member.Pod.UID != before.member.Pod.UID || !member.Pod.DeletionTimestamp.IsZero() || !mysqlStatefulSetPodHealthy(member.Pod) || roleErr != nil || role != before.role || imageErr != nil || image != before.image {
 			return fmt.Errorf("handoff member identity changed during proof")
+		}
+		reference, err := r.observeMysqlElectionReference(ctx, member.Pod, cluster)
+		if err != nil || reference.ServerUUID != before.reference.ServerUUID || r.validateMysqlGTIDBootstrapIdentity(ctx, cluster, member.Pod, reference.ServerUUID) != nil {
+			return fmt.Errorf("handoff persistent identity changed during proof")
 		}
 	}
 	endpoints, err := r.observeMysqlPrimaryRoutingEndpoints(ctx, cluster)
@@ -465,6 +472,10 @@ func (r *MysqlClusterReconciler) planMysqlHandoffAction(ctx context.Context, clu
 
 func (r *MysqlClusterReconciler) planMysqlHandoffRejoin(ctx context.Context, cluster *databasev1.MysqlCluster, o *mysqlHandoffObservation) (mysqlHandoffAction, error) {
 	wait := mysqlHandoffAction{kind: "wait"}
+	trusted, err := mysqlTrustedBootstrapGTIDSet(cluster)
+	if err != nil {
+		return wait, err
+	}
 	h := cluster.Status.Upgrade.Handoff
 	p := o.named(h.Candidate)
 	if !mysqlUpgradeHAHealthy(cluster) || cluster.Status.HA.Primary != h.Candidate || cluster.Status.HA.PrimaryUID != h.CandidateUID || !mysqlHandoffSingleMaster(o, h.Candidate, h.CandidateUID, true) || !mysqlHandoffWritable(p) || !p.source || !mysqlReplicationStopped(p.channel) {
@@ -505,7 +516,7 @@ func (r *MysqlClusterReconciler) planMysqlHandoffRejoin(ctx context.Context, clu
 		if !m.write.GTIDReady {
 			return wait, fmt.Errorf("rejoin member is not GTID ready")
 		}
-		output, err := r.executeCommandOnPod(p.member.Pod, mysqlMemberAncestryAgainstCurrentPrimaryCommand(m.reference.GTIDSet))
+		output, err := r.executeCommandOnPod(p.member.Pod, mysqlMemberAncestryAgainstCurrentPrimaryCommand(m.reference.GTIDSet, trusted))
 		if err != nil {
 			return wait, fmt.Errorf("rejoin ancestry observation failed")
 		}

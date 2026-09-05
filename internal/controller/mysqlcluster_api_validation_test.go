@@ -125,6 +125,118 @@ func phase5BCandidateSelectedStatusForAdmission(emptyGTID bool) *databasev1.Mysq
 	}
 }
 
+var _ = Describe("GTID bootstrap provenance API admission", func() {
+	ctx := context.Background()
+	entry := func(ordinal int32, pvcUID, serverUUID, bootstrap string) databasev1.MysqlClusterGTIDBootstrapStatus {
+		return databasev1.MysqlClusterGTIDBootstrapStatus{
+			Ordinal: ordinal, PVCUID: pvcUID, ServerUUID: serverUUID, BootstrapGTIDSet: bootstrap,
+		}
+	}
+	entryForOrdinal := func(ordinal int32) databasev1.MysqlClusterGTIDBootstrapStatus {
+		return entry(
+			ordinal,
+			fmt.Sprintf("pvc-%d", ordinal),
+			fmt.Sprintf("%08x-0000-0000-0000-%012x", ordinal, ordinal),
+			"",
+		)
+	}
+
+	It("enforces the supported replica domain", func() {
+		accepted := validMysqlClusterForAdmission("api-replicas-64")
+		accepted.Spec.Replicas = int32PtrForTest(64)
+		Expect(k8sClient.Create(ctx, accepted)).To(Succeed())
+		cleanupMysqlClusterForAdmission(ctx, accepted)
+
+		rejected := validMysqlClusterForAdmission("api-replicas-65")
+		rejected.Spec.Replicas = int32PtrForTest(65)
+		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, rejected))).To(BeTrue())
+	})
+
+	It("accepts provenance ordinal 64 and rejects ordinal 65", func() {
+		accepted := validMysqlClusterForAdmission("api-gtid-ordinal-64")
+		accepted.Spec.Replicas = int32PtrForTest(64)
+		Expect(k8sClient.Create(ctx, accepted)).To(Succeed())
+		accepted.Status.GTIDBootstrap = make([]databasev1.MysqlClusterGTIDBootstrapStatus, 0, 64)
+		for ordinal := int32(1); ordinal <= 64; ordinal++ {
+			accepted.Status.GTIDBootstrap = append(accepted.Status.GTIDBootstrap, entryForOrdinal(ordinal))
+		}
+		Expect(k8sClient.Status().Update(ctx, accepted)).To(Succeed())
+		cleanupMysqlClusterForAdmission(ctx, accepted)
+
+		rejected := validMysqlClusterForAdmission("api-gtid-ordinal-65")
+		Expect(k8sClient.Create(ctx, rejected)).To(Succeed())
+		rejected.Status.GTIDBootstrap = []databasev1.MysqlClusterGTIDBootstrapStatus{entryForOrdinal(65)}
+		Expect(apierrors.IsInvalid(k8sClient.Status().Update(ctx, rejected))).To(BeTrue())
+		cleanupMysqlClusterForAdmission(ctx, rejected)
+	})
+
+	It("round-trips empty bootstrap history and permits append-only growth", func() {
+		cluster := validMysqlClusterForAdmission("api-gtid-bootstrap-append")
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		DeferCleanup(func() { cleanupMysqlClusterForAdmission(context.Background(), cluster) })
+		cluster.Status.GTIDBootstrap = []databasev1.MysqlClusterGTIDBootstrapStatus{
+			entry(1, "pvc-1", mysqlGTIDTestUUID1, ""),
+		}
+		Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
+		stored := &databasev1.MysqlCluster{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, stored)).To(Succeed())
+		stored.Status.GTIDBootstrap = append(stored.Status.GTIDBootstrap,
+			entry(2, "pvc-2", mysqlGTIDTestUUID2, mysqlGTIDTestUUID2+":1"))
+		Expect(k8sClient.Status().Update(ctx, stored)).To(Succeed())
+	})
+
+	It("rejects mutation, removal, and duplicate identities", func() {
+		testCases := []struct {
+			name   string
+			mutate func([]databasev1.MysqlClusterGTIDBootstrapStatus) []databasev1.MysqlClusterGTIDBootstrapStatus
+		}{
+			{name: "old ordinal", mutate: func(entries []databasev1.MysqlClusterGTIDBootstrapStatus) []databasev1.MysqlClusterGTIDBootstrapStatus {
+				entries[0].Ordinal = 3
+				return entries
+			}},
+			{name: "old PVC UID", mutate: func(entries []databasev1.MysqlClusterGTIDBootstrapStatus) []databasev1.MysqlClusterGTIDBootstrapStatus {
+				entries[0].PVCUID = "changed-pvc"
+				return entries
+			}},
+			{name: "old server UUID", mutate: func(entries []databasev1.MysqlClusterGTIDBootstrapStatus) []databasev1.MysqlClusterGTIDBootstrapStatus {
+				entries[0].ServerUUID = mysqlGTIDTestUUID3
+				return entries
+			}},
+			{name: "old bootstrap GTID", mutate: func(entries []databasev1.MysqlClusterGTIDBootstrapStatus) []databasev1.MysqlClusterGTIDBootstrapStatus {
+				entries[0].BootstrapGTIDSet = mysqlGTIDTestUUID1 + ":1-2"
+				return entries
+			}},
+			{name: "old entry removal", mutate: func(entries []databasev1.MysqlClusterGTIDBootstrapStatus) []databasev1.MysqlClusterGTIDBootstrapStatus {
+				return entries[1:]
+			}},
+			{name: "duplicate ordinal", mutate: func(entries []databasev1.MysqlClusterGTIDBootstrapStatus) []databasev1.MysqlClusterGTIDBootstrapStatus {
+				return append(entries, entry(2, "pvc-3", mysqlGTIDTestUUID3, ""))
+			}},
+			{name: "duplicate PVC UID", mutate: func(entries []databasev1.MysqlClusterGTIDBootstrapStatus) []databasev1.MysqlClusterGTIDBootstrapStatus {
+				return append(entries, entry(3, entries[0].PVCUID, mysqlGTIDTestUUID3, ""))
+			}},
+			{name: "duplicate server UUID", mutate: func(entries []databasev1.MysqlClusterGTIDBootstrapStatus) []databasev1.MysqlClusterGTIDBootstrapStatus {
+				return append(entries, entry(3, "pvc-3", entries[0].ServerUUID, ""))
+			}},
+		}
+		for index, testCase := range testCases {
+			cluster := validMysqlClusterForAdmission(fmt.Sprintf("api-gtid-bootstrap-invalid-%d", index))
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			cluster.Status.GTIDBootstrap = []databasev1.MysqlClusterGTIDBootstrapStatus{
+				entry(1, "pvc-1", mysqlGTIDTestUUID1, ""),
+				entry(2, "pvc-2", mysqlGTIDTestUUID2, mysqlGTIDTestUUID2+":1"),
+			}
+			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
+			stored := &databasev1.MysqlCluster{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, stored)).To(Succeed())
+			stored.Status.GTIDBootstrap = testCase.mutate(stored.Status.GTIDBootstrap)
+			err := k8sClient.Status().Update(ctx, stored)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue(), "unexpected error for %s: %v", testCase.name, err)
+			cleanupMysqlClusterForAdmission(ctx, cluster)
+		}
+	})
+})
+
 func persistHAStatusForAdmission(ctx context.Context, cluster *databasev1.MysqlCluster, status *databasev1.MysqlClusterHAStatus) error {
 	stored := &databasev1.MysqlCluster{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Name}, stored); err != nil {

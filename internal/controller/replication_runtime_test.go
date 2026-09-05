@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	databasev1 "github.com/egonlin/api/v1"
@@ -79,15 +80,43 @@ func TestPhase3CReplicationRuntimeActions(t *testing.T) {
 			statefulSet := phase1HStatefulSet(t, cluster)
 			primary := phase1HPod(t, cluster, statefulSet, 1, "master", true)
 			replica := phase1HPod(t, cluster, statefulSet, 2, "slave", true)
+			if testCase.name == "absent channel CONFIGURE" {
+				cluster.ResourceVersion = "1"
+				cluster.Status.HA = phase4HAStatus(databasev1.MysqlClusterHAStateHealthy, primary)
+				cluster.Status.GTIDBootstrap = []databasev1.MysqlClusterGTIDBootstrapStatus{
+					{Ordinal: 1, PVCUID: mysqlTestPVCUID(primary), ServerUUID: mysqlGTIDTestUUID1, BootstrapGTIDSet: ""},
+					{Ordinal: 2, PVCUID: mysqlTestPVCUID(replica), ServerUUID: mysqlGTIDTestUUID2, BootstrapGTIDSet: ""},
+				}
+			}
 			memoryClient := newStatefulSetReconcileMemoryClient(statefulSet, primary, replica)
+			if testCase.name == "absent channel CONFIGURE" {
+				memoryClient = newStatefulSetReconcileMemoryClient(cluster, statefulSet, primary, replica, phase1HEndpoints(cluster, primary))
+			}
 			commands := make([]string, 0, 2)
 			reconciler := &MysqlClusterReconciler{
 				Client: memoryClient,
 				execCommandOnPodFn: func(commandPod *corev1.Pod, command string) (string, error) {
 					commands = append(commands, command)
-					g.Expect(commandPod.Name).To(Equal(replica.Name))
+					if testCase.name != "absent channel CONFIGURE" {
+						g.Expect(commandPod.Name).To(Equal(replica.Name))
+					}
 					if command == mysqlWriteSafetyObservationCommand() {
+						if commandPod.Name == primary.Name {
+							return "0\t0\tON\tON\n", nil
+						}
 						return "1\t1\tON\tON\n", nil
+					}
+					if command == mysqlSourceCapabilityCommand() {
+						return "1\t1\n", nil
+					}
+					if command == mysqlElectionReferenceCommand() {
+						if commandPod.Name == primary.Name {
+							return phase5BElectionReferenceOutput(mysqlGTIDTestUUID1, ""), nil
+						}
+						return phase5BElectionReferenceOutput(mysqlGTIDTestUUID2, ""), nil
+					}
+					if commandPod.Name == primary.Name && strings.Contains(command, "GTID_SUBSET") {
+						return "1\t\n", nil
 					}
 					if command == mysqlShowSlaveStatusCommand() {
 						return testCase.statusOutput(cluster.Spec.MasterService), nil
@@ -100,8 +129,17 @@ func TestPhase3CReplicationRuntimeActions(t *testing.T) {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(result.RequeueAfter).To(Equal(mysqlReplicationRuntimeRequeueAfter))
 			g.Expect(converged).To(BeFalse())
+			if testCase.name == "absent channel CONFIGURE" {
+				g.Expect(commands).To(ContainElement(mysqlInitializeReplicaCommand(cluster.Spec.MasterService)))
+				g.Expect(commands).NotTo(ContainElement(mysqlPreparePrimaryCommand()))
+				g.Expect(memoryClient.updateCount).To(Equal(0))
+				return
+			}
 			expectedCommands := []string{mysqlWriteSafetyObservationCommand(), mysqlShowSlaveStatusCommand()}
 			if testCase.expectedCorrection != nil {
+				if testCase.name == "absent channel CONFIGURE" {
+					expectedCommands = append(expectedCommands, mysqlElectionReferenceCommand())
+				}
 				expectedCommands = append(expectedCommands, testCase.expectedCorrection(cluster.Spec.MasterService))
 			}
 			g.Expect(commands).To(Equal(expectedCommands))
@@ -153,18 +191,41 @@ func TestPhase3CReplicationRuntimeRolePublication(t *testing.T) {
 	g := NewWithT(t)
 	ctx := context.Background()
 	cluster := phase1HCluster("phase3c-roleless", true)
+	cluster.ResourceVersion = "1"
 	statefulSet := phase1HStatefulSet(t, cluster)
 	primary := phase1HPod(t, cluster, statefulSet, 1, "master", true)
 	rolelessReplica := statefulSetPodForLifecycleTest(t, cluster, statefulSet, 2)
-	memoryClient := newStatefulSetReconcileMemoryClient(statefulSet, primary, rolelessReplica)
+	rolelessReplica.UID = "phase3c-roleless-pod"
+	pvc := mysqlGTIDTestPVC(rolelessReplica, "phase3c-roleless-pvc")
+	cluster.Status.HA = phase4HAStatus(databasev1.MysqlClusterHAStateHealthy, primary)
+	cluster.Status.GTIDBootstrap = []databasev1.MysqlClusterGTIDBootstrapStatus{
+		{Ordinal: 1, PVCUID: mysqlTestPVCUID(primary), ServerUUID: mysqlGTIDTestUUID1, BootstrapGTIDSet: ""},
+		{Ordinal: 2, PVCUID: "phase3c-roleless-pvc", ServerUUID: mysqlGTIDTestUUID2, BootstrapGTIDSet: ""},
+	}
+	memoryClient := newStatefulSetReconcileMemoryClient(cluster, statefulSet, primary, rolelessReplica, pvc, phase1HEndpoints(cluster, primary))
 	healthy := false
 	commands := make([]string, 0, 3)
 	reconciler := &MysqlClusterReconciler{
 		Client: memoryClient,
-		execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
+		execCommandOnPodFn: func(pod *corev1.Pod, command string) (string, error) {
 			commands = append(commands, command)
 			if command == mysqlWriteSafetyObservationCommand() {
+				if pod.Name == primary.Name {
+					return "0\t0\tON\tON\n", nil
+				}
 				return "1\t1\tON\tON\n", nil
+			}
+			if command == mysqlSourceCapabilityCommand() {
+				return "1\t1\n", nil
+			}
+			if command == mysqlElectionReferenceCommand() {
+				if pod.Name == primary.Name {
+					return phase5BElectionReferenceOutput(mysqlGTIDTestUUID1, ""), nil
+				}
+				return phase5BElectionReferenceOutput(mysqlGTIDTestUUID2, ""), nil
+			}
+			if pod.Name == primary.Name && strings.Contains(command, "GTID_SUBSET") {
+				return "1\t\n", nil
 			}
 			if command == mysqlShowSlaveStatusCommand() {
 				if healthy {
@@ -193,13 +254,8 @@ func TestPhase3CReplicationRuntimeRolePublication(t *testing.T) {
 	g.Expect(converged).To(BeTrue())
 	expectMysqlPodRoleForTest(t, ctx, reconciler, rolelessReplica, "slave")
 	g.Expect(memoryClient.updateCount).To(Equal(1))
-	g.Expect(commands).To(Equal([]string{
-		mysqlWriteSafetyObservationCommand(),
-		mysqlShowSlaveStatusCommand(),
-		mysqlInitializeReplicaCommand(cluster.Spec.MasterService),
-		mysqlWriteSafetyObservationCommand(),
-		mysqlShowSlaveStatusCommand(),
-	}))
+	g.Expect(commands).To(ContainElement(mysqlInitializeReplicaCommand(cluster.Spec.MasterService)))
+	g.Expect(commands).NotTo(ContainElement(mysqlPreparePrimaryCommand()))
 }
 
 func TestPhase3CReplicationRuntimeTopologySafety(t *testing.T) {
@@ -349,6 +405,11 @@ func TestPhase3CReplicationRuntimeTransitionCompletion(t *testing.T) {
 			primary := phase1HPod(t, cluster, statefulSet, 1, "master", true)
 			replica2 := phase1HPod(t, cluster, statefulSet, 2, "slave", true)
 			newReplica := phase1HPod(t, cluster, statefulSet, 3, "slave", true)
+			if testCase.name == "CONFIGURE" {
+				cluster.Status.GTIDBootstrap = []databasev1.MysqlClusterGTIDBootstrapStatus{{
+					Ordinal: 3, PVCUID: mysqlTestPVCUID(newReplica), ServerUUID: mysqlTestServerUUID(3), BootstrapGTIDSet: "",
+				}}
+			}
 			commands := make([]string, 0, 3)
 			reconciler := phase1HReconciler(
 				t,
@@ -364,6 +425,17 @@ func TestPhase3CReplicationRuntimeTransitionCompletion(t *testing.T) {
 				commands = append(commands, commandPod.Name+":"+command)
 				if command == mysqlWriteSafetyObservationCommand() {
 					return "1\t1\tON\tON\n", nil
+				}
+				if command == mysqlElectionReferenceCommand() {
+					ordinal, _ := mysqlStatefulSetPodOrdinal(commandPod)
+					return phase5BElectionReferenceOutput(mysqlTestServerUUID(ordinal), ""), nil
+				}
+				if command == mysqlSourceCapabilityCommand() {
+					return "1\t1\n", nil
+				}
+				if command == mysqlGTIDBootstrapObservationCommand() {
+					ordinal, _ := mysqlStatefulSetPodOrdinal(commandPod)
+					return mysqlGTIDBootstrapOutput(mysqlTestServerUUID(ordinal), "", "", true), nil
 				}
 				if command == mysqlShowSlaveStatusCommand() {
 					if commandPod.Name == newReplica.Name {

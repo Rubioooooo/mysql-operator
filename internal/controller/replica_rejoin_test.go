@@ -137,8 +137,9 @@ func (p *phase5DExecPlan) execute(pod *corev1.Pod, command string) (string, erro
 		return "", nil
 	}
 	if pod.Name == p.candidate {
+		trusted, _ := mysqlTrustedBootstrapGTIDSet(p.cluster)
 		for _, memberState := range p.states {
-			if command != mysqlMemberAncestryAgainstCurrentPrimaryCommand(memberState.gtidSet) {
+			if command != mysqlMemberAncestryAgainstCurrentPrimaryCommand(memberState.gtidSet, trusted) {
 				continue
 			}
 			return fmt.Sprintf(
@@ -248,6 +249,13 @@ func newPhase5DFixture(t *testing.T, name string) *phase5DFixture {
 		},
 	}
 	plan := &phase5DExecPlan{cluster: cluster, candidate: candidate.Name, states: states}
+	cluster.Status.GTIDBootstrap = nil
+	for _, pod := range []*corev1.Pod{former, candidate, ordinary} {
+		ordinal, _ := mysqlStatefulSetPodOrdinal(pod)
+		cluster.Status.GTIDBootstrap = append(cluster.Status.GTIDBootstrap, databasev1.MysqlClusterGTIDBootstrapStatus{
+			Ordinal: ordinal, PVCUID: mysqlTestPVCUID(pod), ServerUUID: states[pod.Name].serverUUID, BootstrapGTIDSet: "",
+		})
+	}
 	objects := phase5BObjects(cluster, statefulSet, former, []*corev1.Pod{candidate, ordinary})
 	objects = append(objects, phase1HEndpoints(cluster, candidate))
 	reconciler := phase1HReconciler(t, objects...)
@@ -295,7 +303,7 @@ func TestPhase5DCommandsAndMemberFirstGTIDSubsetProof(t *testing.T) {
 	command := mysqlMemberAncestryAgainstCurrentPrimaryCommand(memberGTID)
 	g.Expect(command).NotTo(ContainSubstring(memberGTID))
 	g.Expect(command).To(ContainSubstring(base64.StdEncoding.EncodeToString([]byte(memberGTID))))
-	g.Expect(command).To(ContainSubstring("GTID_SUBSET(FROM_BASE64("))
+	g.Expect(command).To(ContainSubstring("GTID_SUBSET(GTID_SUBTRACT(FROM_BASE64("))
 	g.Expect(command).To(ContainSubstring("@@GLOBAL.gtid_executed"))
 	g.Expect(mysqlStartSlaveCommand()).To(Equal(mysqlRootClientCommand + ` -e "START SLAVE;"`))
 

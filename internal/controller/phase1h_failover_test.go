@@ -46,6 +46,12 @@ func phase1HPod(
 	t.Helper()
 	pod := statefulSetPodForLifecycleTest(t, cluster, statefulSet, ordinal)
 	pod.UID = types.UID(fmt.Sprintf("%s-pod-%d-uid", cluster.Name, ordinal))
+	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+		Name: mysqlDataVolume,
+		VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+			ClaimName: mysqlDataVolume + "-" + pod.Name,
+		}},
+	})
 	pod.Labels[LabelMysqlRole] = role
 	pod.Labels[LegacyLabelRole] = role
 	for i := range pod.Status.ContainerStatuses {
@@ -76,7 +82,46 @@ func phase1HEndpoints(cluster *databasev1.MysqlCluster, primaryPod *corev1.Pod) 
 
 func phase1HReconciler(t *testing.T, objects ...client.Object) *MysqlClusterReconciler {
 	t.Helper()
+	existingPVCs := make(map[string]struct{})
+	for _, object := range objects {
+		if pvc, ok := object.(*corev1.PersistentVolumeClaim); ok {
+			existingPVCs[pvc.Namespace+"/"+pvc.Name] = struct{}{}
+		}
+	}
+	for _, object := range append([]client.Object(nil), objects...) {
+		pod, ok := object.(*corev1.Pod)
+		if !ok {
+			continue
+		}
+		claimName, err := mysqlPodDataPVCName(pod)
+		if err != nil {
+			continue
+		}
+		key := pod.Namespace + "/" + claimName
+		if _, found := existingPVCs[key]; found {
+			continue
+		}
+		objects = append(objects, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+			Name: claimName, Namespace: pod.Namespace, UID: types.UID(claimName + "-uid"),
+		}})
+		existingPVCs[key] = struct{}{}
+	}
 	return newStatefulSetReconcileTestReconciler(t, newStatefulSetReconcileTestScheme(t), objects...)
+}
+
+func mysqlTestPVCUID(pod *corev1.Pod) string {
+	return mysqlDataVolume + "-" + pod.Name + "-uid"
+}
+
+func mysqlTestServerUUID(ordinal int32) string {
+	switch ordinal {
+	case 1:
+		return "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	case 2:
+		return "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+	default:
+		return fmt.Sprintf("%08d-dddd-eeee-ffff-000000000000", ordinal)
+	}
 }
 
 func TestPhase1HRuntimeReadinessGates(t *testing.T) {

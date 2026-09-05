@@ -58,6 +58,15 @@ func phase5BFixture(
 	for _, ordinal := range replicaOrdinals {
 		replicas = append(replicas, phase1HPod(t, cluster, statefulSet, ordinal, "slave", true))
 	}
+	cluster.Status.GTIDBootstrap = []databasev1.MysqlClusterGTIDBootstrapStatus{{
+		Ordinal: 1, PVCUID: mysqlTestPVCUID(primary), ServerUUID: phase5BPrimaryServerUUID, BootstrapGTIDSet: "",
+	}}
+	for _, replica := range replicas {
+		ordinal, _ := mysqlStatefulSetPodOrdinal(replica)
+		cluster.Status.GTIDBootstrap = append(cluster.Status.GTIDBootstrap, databasev1.MysqlClusterGTIDBootstrapStatus{
+			Ordinal: ordinal, PVCUID: mysqlTestPVCUID(replica), ServerUUID: mysqlTestServerUUID(ordinal), BootstrapGTIDSet: "",
+		})
+	}
 	return cluster, statefulSet, primary, replicas
 }
 
@@ -113,6 +122,10 @@ func (p *phase5BExecPlan) execute(pod *corev1.Pod, command string) (string, erro
 	case mysqlElectionReferenceCommand():
 		if pod.Name == p.primaryName {
 			return phase5BElectionReferenceOutput(phase5BPrimaryServerUUID, p.primaryGTIDSet), nil
+		}
+		ordinal, err := mysqlStatefulSetPodOrdinal(pod)
+		if err == nil {
+			return phase5BElectionReferenceOutput(mysqlTestServerUUID(ordinal), p.primaryGTIDSet), nil
 		}
 	case mysqlSourceCapabilityCommand():
 		if output, found := p.sourceCapability[pod.Name]; found {

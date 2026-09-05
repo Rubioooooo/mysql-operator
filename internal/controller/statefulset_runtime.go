@@ -96,6 +96,37 @@ func (r *MysqlClusterReconciler) reconcileStatefulSetInitialization(
 	if !ready {
 		return ctrl.Result{}, false, nil
 	}
+	members, err := r.listMysqlStatefulSetPods(ctx, cluster)
+	if err != nil {
+		return ctrl.Result{}, false, err
+	}
+	topologyStarted := false
+	for _, member := range members {
+		role, err := observeMysqlPublishedRole(member.Pod)
+		if err != nil {
+			return ctrl.Result{}, false, err
+		}
+		topologyStarted = topologyStarted || role != mysqlPublishedRoleNone
+	}
+	if topologyStarted {
+		if len(cluster.Status.GTIDBootstrap) != len(members) {
+			return ctrl.Result{}, false, fmt.Errorf("initial topology was published without complete GTID bootstrap provenance")
+		}
+		if err := validateMysqlGTIDBootstrapStatus(cluster.Status.GTIDBootstrap); err != nil {
+			return ctrl.Result{}, false, err
+		}
+		if err := r.validateMysqlGTIDBootstrapMembers(ctx, cluster, members); err != nil {
+			return ctrl.Result{}, false, fmt.Errorf("initial topology GTID bootstrap identity changed: %w", err)
+		}
+	} else {
+		provenanceReady, provenanceBarrier, err := r.reconcileMysqlInitialGTIDBootstrap(ctx, cluster)
+		if err != nil {
+			return ctrl.Result{}, false, fmt.Errorf("failed to establish initial GTID bootstrap provenance: %w", err)
+		}
+		if provenanceBarrier || !provenanceReady {
+			return ctrl.Result{RequeueAfter: mysqlInitializationConvergenceRequeueAfter}, false, nil
+		}
+	}
 
 	primaryName, replicaNames := mysqlStatefulSetInitialTopology(cluster)
 	topologyConverged, err := r.reconcileMysqlInitializationTopology(ctx, primaryName, replicaNames, *cluster)

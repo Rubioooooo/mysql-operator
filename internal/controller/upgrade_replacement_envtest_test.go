@@ -22,6 +22,10 @@ type replacementEnvDeleteClient struct {
 	calls        []upgradeDeleteEvidence
 }
 
+func replacementEnvServerUUID(ordinal int32) string {
+	return fmt.Sprintf("%08d-bbbb-cccc-dddd-eeeeeeeeeeee", ordinal)
+}
+
 func (c *replacementEnvDeleteClient) Delete(ctx context.Context, object client.Object, options ...client.DeleteOption) error {
 	pod, ok := object.(*corev1.Pod)
 	Expect(ok).To(BeTrue())
@@ -45,10 +49,11 @@ func replacementEnvFixture(ctx context.Context, name string) (*MysqlClusterRecon
 	r := statefulSetEnvtestReconciler()
 	sts := createStatefulSetRuntimeWorkload(ctx, cluster, 3)
 	var primary *corev1.Pod
+	bootstrap := make([]databasev1.MysqlClusterGTIDBootstrapStatus, 0, 3)
 	for ordinal := int32(1); ordinal <= 3; ordinal++ {
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: mysqlStatefulSetPodName(cluster, ordinal), Namespace: cluster.Namespace, Labels: mysqlIdentityLabels(cluster)}, Spec: *sts.Spec.Template.Spec.DeepCopy()}
 		// Simulate the volume reference normally added by the StatefulSet
-		// controller from volumeClaimTemplates; no PVC/PV is created here.
+		// controller from volumeClaimTemplates.
 		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: mysqlDataVolume, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: mysqlDataVolume + "-" + pod.Name}}})
 		pod.Labels[statefulSetPodIndexLabel] = fmt.Sprint(ordinal)
 		role := "slave"
@@ -62,6 +67,20 @@ func replacementEnvFixture(ctx context.Context, name string) (*MysqlClusterRecon
 		pod.Status.Phase = corev1.PodRunning
 		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: mysqlContainerName, Ready: true}}
 		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+		pvc := sts.Spec.VolumeClaimTemplates[0].DeepCopy()
+		pvc.ObjectMeta = metav1.ObjectMeta{
+			Name:      mysqlDataVolume + "-" + pod.Name,
+			Namespace: cluster.Namespace,
+			Labels:    mysqlIdentityLabels(cluster),
+		}
+		Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+		DeferCleanup(func() { cleanupStatefulSetEnvtestObject(ctx, pvc) })
+		bootstrap = append(bootstrap, databasev1.MysqlClusterGTIDBootstrapStatus{
+			Ordinal:          ordinal,
+			PVCUID:           string(pvc.UID),
+			ServerUUID:       replacementEnvServerUUID(ordinal),
+			BootstrapGTIDSet: "",
+		})
 		if ordinal == 1 {
 			primary = pod
 		}
@@ -77,16 +96,21 @@ func replacementEnvFixture(ctx context.Context, name string) (*MysqlClusterRecon
 	cluster.Status.LastConvergedImage = oldImage
 	cluster.Status.LastConvergedReplicas = replicaCountCopy(3)
 	cluster.Status.HA = phase4HAStatus(databasev1.MysqlClusterHAStateHealthy, primary)
+	cluster.Status.GTIDBootstrap = bootstrap
 	cluster.Status.Upgrade = &databasev1.MysqlClusterUpgradeStatus{FromImage: oldImage, TargetImage: cluster.Spec.Image, Stage: databasev1.MysqlClusterUpgradeStageTemplateReady}
 	Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
 	sts.Spec.Template = desiredMysqlStatefulSetWithImage(cluster, cluster.Spec.Image).Spec.Template
 	Expect(k8sClient.Update(ctx, sts)).To(Succeed())
-	r.execCommandOnPodFn = func(_ *corev1.Pod, command string) (string, error) {
+	r.execCommandOnPodFn = func(pod *corev1.Pod, command string) (string, error) {
 		switch command {
 		case mysqlElectionReferenceCommand():
-			return upgradePrimaryUUID + "\t\n", nil
+			ordinal, err := mysqlStatefulSetPodOrdinal(pod)
+			if err != nil {
+				return "", err
+			}
+			return replacementEnvServerUUID(ordinal) + "\t\n", nil
 		case mysqlShowSlaveStatusCommand():
-			return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", "") + "\nMaster_UUID: " + upgradePrimaryUUID + "\n", nil
+			return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", "") + "\nMaster_UUID: " + replacementEnvServerUUID(1) + "\n", nil
 		default:
 			return "", fmt.Errorf("unexpected mutation SQL in envtest")
 		}

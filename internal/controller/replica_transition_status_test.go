@@ -89,6 +89,13 @@ func TestMysqlClusterReplicaTransitionStatusValidation(t *testing.T) {
 			errorSubstr: "lastConvergedReplicas must be greater than zero",
 		},
 		{
+			name: "last converged replicas above product maximum is invalid",
+			status: databasev1.MysqlClusterStatus{
+				LastConvergedReplicas: replicaCountPointer(65),
+			},
+			errorSubstr: "lastConvergedReplicas must not exceed 64",
+		},
+		{
 			name: "zero transition source is invalid",
 			status: databasev1.MysqlClusterStatus{
 				LastConvergedReplicas: replicaCountPointer(3),
@@ -111,6 +118,17 @@ func TestMysqlClusterReplicaTransitionStatusValidation(t *testing.T) {
 			errorSubstr: "fromReplicas must be greater than zero",
 		},
 		{
+			name: "transition source above product maximum is invalid",
+			status: databasev1.MysqlClusterStatus{
+				LastConvergedReplicas: replicaCountPointer(65),
+				ReplicaTransition: &databasev1.MysqlClusterReplicaTransitionStatus{
+					FromReplicas:   65,
+					TargetReplicas: 64,
+				},
+			},
+			errorSubstr: "lastConvergedReplicas must not exceed 64",
+		},
+		{
 			name: "zero transition target is invalid",
 			status: databasev1.MysqlClusterStatus{
 				LastConvergedReplicas: replicaCountPointer(3),
@@ -131,6 +149,17 @@ func TestMysqlClusterReplicaTransitionStatusValidation(t *testing.T) {
 				},
 			},
 			errorSubstr: "targetReplicas must be greater than zero",
+		},
+		{
+			name: "transition target above product maximum is invalid",
+			status: databasev1.MysqlClusterStatus{
+				LastConvergedReplicas: replicaCountPointer(64),
+				ReplicaTransition: &databasev1.MysqlClusterReplicaTransitionStatus{
+					FromReplicas:   64,
+					TargetReplicas: 65,
+				},
+			},
+			errorSubstr: "targetReplicas must not exceed 64",
 		},
 		{
 			name: "transition source must match last converged replicas",

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	databasev1 "github.com/egonlin/api/v1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -222,8 +223,15 @@ func TestInitializationTopologyPublicationOrdering(t *testing.T) {
 	statefulSet := controlledStatefulSetForLifecycleTest(t, cluster, types.UID("initial-role-order-statefulset-uid"))
 	newTopology := func(t *testing.T) (*corev1.Pod, *corev1.Pod) {
 		t.Helper()
-		return statefulSetPodForLifecycleTest(t, cluster, statefulSet, 1),
-			statefulSetPodForLifecycleTest(t, cluster, statefulSet, 2)
+		primary := statefulSetPodForLifecycleTest(t, cluster, statefulSet, 1)
+		replica := statefulSetPodForLifecycleTest(t, cluster, statefulSet, 2)
+		primary.UID = "initial-role-primary"
+		replica.UID = "initial-role-replica"
+		mysqlGTIDTestPVC(replica, mysqlTestPVCUID(replica))
+		cluster.Status.GTIDBootstrap = []databasev1.MysqlClusterGTIDBootstrapStatus{{
+			Ordinal: 2, PVCUID: mysqlTestPVCUID(replica), ServerUUID: mysqlGTIDTestUUID2, BootstrapGTIDSet: "",
+		}}
+		return primary, replica
 	}
 	initialPrimaryHost := cluster.Spec.MasterService
 
@@ -249,6 +257,12 @@ func TestInitializationTopologyPublicationOrdering(t *testing.T) {
 					return "", nil
 				case pod.Name == replica.Name && command == mysqlWriteSafetyObservationCommand():
 					return "1\t1\tON\tON\n", nil
+				case pod.Name == replica.Name && command == mysqlSourceCapabilityCommand():
+					return "1\t1\n", nil
+				case pod.Name == replica.Name && command == mysqlGTIDBootstrapObservationCommand():
+					return mysqlGTIDBootstrapOutput(mysqlGTIDTestUUID2, "", "", true), nil
+				case pod.Name == replica.Name && command == mysqlElectionReferenceCommand():
+					return phase5BElectionReferenceOutput(mysqlGTIDTestUUID2, ""), nil
 				case pod.Name == replica.Name && command == mysqlShowSlaveStatusCommand():
 					return "", nil
 				case pod.Name == replica.Name && command == mysqlInitializeReplicaCommand(initialPrimaryHost):
@@ -280,6 +294,15 @@ func TestInitializationTopologyPublicationOrdering(t *testing.T) {
 				if pod.Name == replica.Name && command == mysqlWriteSafetyObservationCommand() {
 					return "1\t1\tON\tON\n", nil
 				}
+				if pod.Name == replica.Name && command == mysqlElectionReferenceCommand() {
+					return phase5BElectionReferenceOutput(mysqlGTIDTestUUID2, ""), nil
+				}
+				if pod.Name == replica.Name && command == mysqlSourceCapabilityCommand() {
+					return "1\t1\n", nil
+				}
+				if pod.Name == replica.Name && command == mysqlGTIDBootstrapObservationCommand() {
+					return mysqlGTIDBootstrapOutput(mysqlGTIDTestUUID2, "", "", true), nil
+				}
 				return "", nil
 			},
 		}
@@ -291,6 +314,10 @@ func TestInitializationTopologyPublicationOrdering(t *testing.T) {
 			primary.Name + ":" + mysqlPreparePrimaryCommand(),
 			replica.Name + ":" + mysqlWriteSafetyObservationCommand(),
 			replica.Name + ":" + mysqlShowSlaveStatusCommand(),
+			replica.Name + ":" + mysqlWriteSafetyObservationCommand(),
+			replica.Name + ":" + mysqlSourceCapabilityCommand(),
+			replica.Name + ":" + mysqlShowSlaveStatusCommand(),
+			replica.Name + ":" + mysqlGTIDBootstrapObservationCommand(),
 			replica.Name + ":" + mysqlInitializeReplicaCommand(initialPrimaryHost),
 		}))
 		g.Expect(orderedClient.publications).To(Equal([]string{primary.Name + ":master"}))
@@ -316,6 +343,8 @@ func TestInitializationTopologyPublicationOrdering(t *testing.T) {
 					return "", nil
 				case pod.Name == replica.Name && command == mysqlWriteSafetyObservationCommand():
 					return "1\t1\tON\tON\n", nil
+				case pod.Name == replica.Name && command == mysqlElectionReferenceCommand():
+					return phase5BElectionReferenceOutput(mysqlGTIDTestUUID2, ""), nil
 				case pod.Name == replica.Name && command == mysqlShowSlaveStatusCommand():
 					return mysqlSlaveStatusOutputForTest(
 						"previous-primary",

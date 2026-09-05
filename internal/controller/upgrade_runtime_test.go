@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -72,13 +73,37 @@ func newUpgradeTest(t *testing.T) (*MysqlClusterReconciler, *upgradeTestClient, 
 		}
 		pod := phase1HPod(t, cluster, sts, ordinal, role, true)
 		pod.Spec = *sts.Spec.Template.Spec.DeepCopy()
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+			Name: mysqlDataVolume,
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: mysqlDataVolume + "-" + pod.Name,
+			}},
+		})
 		objects = append(objects, pod)
+		objects = append(objects, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+			Name: mysqlDataVolume + "-" + pod.Name, Namespace: pod.Namespace, UID: types.UID(mysqlTestPVCUID(pod)),
+		}})
+		serverUUID := mysqlReplacementServerUUID(ordinal)
+		if ordinal == 1 {
+			serverUUID = upgradePrimaryUUID
+		}
+		cluster.Status.GTIDBootstrap = append(cluster.Status.GTIDBootstrap, databasev1.MysqlClusterGTIDBootstrapStatus{
+			Ordinal: ordinal, PVCUID: mysqlTestPVCUID(pod), ServerUUID: serverUUID, BootstrapGTIDSet: "",
+		})
 	}
 	c := &upgradeTestClient{statefulSetReconcileMemoryClient: newStatefulSetReconcileMemoryClient(objects...)}
 	r := &MysqlClusterReconciler{Client: c, Scheme: newStatefulSetReconcileTestScheme(t), SnapGoIsEnabled: true}
-	r.execCommandOnPodFn = func(_ *corev1.Pod, command string) (string, error) {
+	r.execCommandOnPodFn = func(pod *corev1.Pod, command string) (string, error) {
 		if command == mysqlWriteSafetyObservationCommand() {
 			return "1\t1\tON\tON\n", nil
+		}
+		if command == mysqlElectionReferenceCommand() {
+			ordinal, _ := mysqlStatefulSetPodOrdinal(pod)
+			serverUUID := mysqlReplacementServerUUID(ordinal)
+			if ordinal == 1 {
+				serverUUID = upgradePrimaryUUID
+			}
+			return phase5BElectionReferenceOutput(serverUUID, ""), nil
 		}
 		if command != mysqlShowSlaveStatusCommand() {
 			t.Fatalf("unexpected SQL mutation in upgrade test")

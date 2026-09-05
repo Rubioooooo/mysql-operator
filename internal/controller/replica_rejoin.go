@@ -72,11 +72,18 @@ func validateMysqlRejoinInventory(
 	return nil
 }
 
-func mysqlMemberAncestryAgainstCurrentPrimaryCommand(memberGTIDSet string) string {
+func mysqlMemberAncestryAgainstCurrentPrimaryCommand(memberGTIDSet string, trustedBootstrapGTIDSet ...string) string {
 	encoded := base64.StdEncoding.EncodeToString([]byte(memberGTIDSet))
+	trusted := ""
+	if len(trustedBootstrapGTIDSet) > 0 {
+		trusted = trustedBootstrapGTIDSet[0]
+	}
+	trustedEncoded := base64.StdEncoding.EncodeToString([]byte(trusted))
 	return mysqlRootClientCommand + fmt.Sprintf(
-		` -Nse "SELECT GTID_SUBSET(FROM_BASE64('%s'), @@GLOBAL.gtid_executed), REPLACE(TO_BASE64(@@GLOBAL.gtid_executed), CHAR(10), '');"`,
+		` -Nse "SELECT GTID_SUBSET(GTID_SUBTRACT(FROM_BASE64('%s'), FROM_BASE64('%s')), GTID_SUBTRACT(@@GLOBAL.gtid_executed, FROM_BASE64('%s'))), REPLACE(TO_BASE64(@@GLOBAL.gtid_executed), CHAR(10), '');"`,
 		encoded,
+		trustedEncoded,
+		trustedEncoded,
 	)
 }
 
@@ -146,6 +153,9 @@ func (r *MysqlClusterReconciler) observeMysqlRejoinPrimary(
 
 	reference, err := r.observeMysqlElectionReference(ctx, candidate.Pod, cluster)
 	if err != nil {
+		return observation, err
+	}
+	if err := r.validateMysqlGTIDBootstrapIdentity(ctx, cluster, candidate.Pod, reference.ServerUUID); err != nil {
 		return observation, err
 	}
 	observation.Reference = reference
@@ -241,7 +251,11 @@ func (r *MysqlClusterReconciler) observeMysqlMemberAncestryAgainstCurrentPrimary
 		return mysqlMemberAncestryObservation{}, primary, false, err
 	}
 	candidate := primary.Candidate.Pod
-	output, err := r.executeCommandOnPod(candidate, mysqlMemberAncestryAgainstCurrentPrimaryCommand(memberGTIDSet))
+	trusted, err := mysqlTrustedBootstrapGTIDSet(cluster)
+	if err != nil {
+		return mysqlMemberAncestryObservation{}, primary, true, err
+	}
+	output, err := r.executeCommandOnPod(candidate, mysqlMemberAncestryAgainstCurrentPrimaryCommand(memberGTIDSet, trusted))
 	if err != nil {
 		return mysqlMemberAncestryObservation{}, primary, true, fmt.Errorf(
 			"failed to prove member ancestry on current primary Pod %s/%s: %w",
@@ -424,6 +438,14 @@ func (r *MysqlClusterReconciler) reconcileMysqlRejoinMember(
 			}
 			return false, nil, nil
 		}
+	}
+	if err := r.validateMysqlGTIDBootstrapIdentity(ctx, cluster, fresh, memberReference.ServerUUID); err != nil {
+		if role == mysqlPublishedRoleSlave {
+			result, _, quarantineErr := r.quarantineMysqlRejoinMember(ctx, cluster, member)
+			return false, &result, quarantineErr
+		}
+		result, _, persistErr := r.persistMysqlUnsafeRejoinHistory(ctx, cluster)
+		return false, &result, persistErr
 	}
 	ancestry, freshPrimary, primaryProven, err := r.observeMysqlMemberAncestryAgainstCurrentPrimary(ctx, cluster, memberReference.GTIDSet)
 	if err != nil {

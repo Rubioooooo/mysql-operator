@@ -410,6 +410,9 @@ func TestPhase5AActiveRoleNoneTopologyBypassesOrdinaryZeroPrimaryGuard(t *testin
 	primary := phase1HPod(t, cluster, statefulSet, 1, "master", false)
 	delete(primary.Labels, LabelMysqlRole)
 	delete(primary.Labels, LegacyLabelRole)
+	cluster.Status.GTIDBootstrap = []databasev1.MysqlClusterGTIDBootstrapStatus{{
+		Ordinal: 1, PVCUID: mysqlTestPVCUID(primary), ServerUUID: phase5BPrimaryServerUUID, BootstrapGTIDSet: "",
+	}}
 	cluster.Status.HA = phase5FencingHA(primary, databasev1.MysqlClusterFenceStateVerified)
 	reconciler := phase1HReconciler(t, cluster, statefulSet, primary)
 	commands := make([]string, 0, 3)

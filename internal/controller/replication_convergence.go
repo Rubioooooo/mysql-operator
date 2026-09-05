@@ -17,6 +17,7 @@ const (
 	mysqlReplicaConvergenceReconfigure mysqlReplicaConvergenceAction = "reconfigure"
 	mysqlReplicaConvergenceWait        mysqlReplicaConvergenceAction = "wait"
 	mysqlReplicaConvergenceWriteSafety mysqlReplicaConvergenceAction = "write-safety"
+	mysqlReplicaConvergenceProvenance  mysqlReplicaConvergenceAction = "provenance"
 )
 
 type mysqlReplicaConvergenceResult struct {
@@ -39,6 +40,124 @@ func classifyMysqlReplicaConvergence(
 	default:
 		return mysqlReplicaConvergenceWait
 	}
+}
+
+func mysqlReplicaNeedsStrictBootstrapProof(cluster *databasev1.MysqlCluster, ordinal int32) (bool, error) {
+	initialized, err := mysqlClusterIsInitialized(cluster)
+	if err != nil {
+		return false, err
+	}
+	return !initialized || mysqlActiveScaleUpOrdinal(cluster, ordinal), nil
+}
+
+func (r *MysqlClusterReconciler) getMysqlAuthoritativeHealthyPrimaryForReplicaRepair(
+	ctx context.Context,
+	cluster *databasev1.MysqlCluster,
+) (*corev1.Pod, error) {
+	if cluster.Status.HA == nil || cluster.Status.HA.State != databasev1.MysqlClusterHAStateHealthy || cluster.Status.HA.Failover != nil {
+		return nil, fmt.Errorf("established replica repair requires durable healthy primary authority")
+	}
+	observation, err := r.observeMysqlPrimaryFailure(ctx, cluster)
+	if err != nil || observation.Classification != mysqlPrimaryHealthy || !mysqlHAIdentityMatches(cluster.Status.HA, observation) {
+		return nil, fmt.Errorf("established replica repair primary authority is ambiguous")
+	}
+	primary, err := r.observeSinglePublishedPrimary(ctx, cluster)
+	if err != nil || primary.Name != observation.PrimaryName || string(primary.UID) != observation.PrimaryUID || !mysqlStatefulSetPodHealthy(primary) {
+		return nil, fmt.Errorf("established replica repair primary identity is invalid")
+	}
+	endpoints, err := r.observeMysqlPrimaryRoutingEndpoints(ctx, cluster)
+	if err != nil || !mysqlPublishedPrimaryRoutingAvailable(primary, endpoints) {
+		return nil, fmt.Errorf("established replica repair primary routing authority is unavailable")
+	}
+	fresh := &corev1.Pod{}
+	key := client.ObjectKeyFromObject(primary)
+	if err := r.Get(ctx, key, fresh); err != nil {
+		return nil, err
+	}
+	if fresh.UID != primary.UID || !mysqlStatefulSetPodHealthy(fresh) {
+		return nil, fmt.Errorf("established replica repair primary Pod identity changed")
+	}
+	if err := r.validateStatefulSetManagedMysqlPod(ctx, fresh, cluster); err != nil {
+		return nil, err
+	}
+	ordinal, err := mysqlStatefulSetPodOrdinal(fresh)
+	if err != nil || fresh.Name != mysqlStatefulSetPodName(cluster, ordinal) {
+		return nil, fmt.Errorf("established replica repair primary has invalid canonical identity")
+	}
+	role, err := observeMysqlPublishedRole(fresh)
+	if err != nil || role != mysqlPublishedRoleMaster {
+		return nil, fmt.Errorf("established replica repair primary publication changed")
+	}
+	return fresh, nil
+}
+
+func (r *MysqlClusterReconciler) proveMysqlEstablishedReplicaChannelRepair(
+	ctx context.Context,
+	cluster *databasev1.MysqlCluster,
+	replica *corev1.Pod,
+) error {
+	replicaReference, err := r.observeMysqlElectionReference(ctx, replica, cluster)
+	if err != nil {
+		return err
+	}
+	if err := r.validateMysqlGTIDBootstrapIdentity(ctx, cluster, replica, replicaReference.ServerUUID); err != nil {
+		return err
+	}
+	replication, err := r.observeMysqlMemberReplication(ctx, replica, cluster)
+	if err != nil {
+		return err
+	}
+	if replication.Channel.Configured {
+		return fmt.Errorf("established replica channel reappeared during repair proof")
+	}
+
+	primary, err := r.getMysqlAuthoritativeHealthyPrimaryForReplicaRepair(ctx, cluster)
+	if err != nil {
+		return err
+	}
+	writeSafety, err := r.observeMysqlWriteSafety(ctx, primary, cluster)
+	if err != nil || !writeSafety.GTIDReady || writeSafety.ReadOnly || writeSafety.SuperReadOnly || writeSafety.WriteRole != mysqlWriteRoleWritable {
+		return fmt.Errorf("established replica repair primary is not a GTID-ready writable authority")
+	}
+	sourceReady, err := r.observeMysqlSourceCapability(ctx, primary, cluster)
+	if err != nil || !sourceReady {
+		return fmt.Errorf("established replica repair primary is not source capable")
+	}
+	primaryReference, err := r.observeMysqlElectionReference(ctx, primary, cluster)
+	if err != nil {
+		return err
+	}
+	if err := r.validateMysqlGTIDBootstrapIdentity(ctx, cluster, primary, primaryReference.ServerUUID); err != nil {
+		return err
+	}
+	trusted, err := mysqlTrustedBootstrapGTIDSet(cluster)
+	if err != nil {
+		return err
+	}
+	output, err := r.executeCommandOnPod(primary, mysqlMemberAncestryAgainstCurrentPrimaryCommand(replicaReference.GTIDSet, trusted))
+	if err != nil {
+		return fmt.Errorf("failed to prove established replica ancestry: %w", err)
+	}
+	ancestry, err := parseMysqlMemberAncestryObservation(output)
+	if err != nil {
+		return err
+	}
+	if !ancestry.MemberSubsetOfPrimary {
+		return fmt.Errorf("established replica effective GTID is not a subset of the authoritative primary")
+	}
+
+	freshCluster := &databasev1.MysqlCluster{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(cluster), freshCluster); err != nil {
+		return err
+	}
+	if freshCluster.UID != cluster.UID || freshCluster.ResourceVersion != cluster.ResourceVersion {
+		return fmt.Errorf("established replica repair authority changed during ancestry proof")
+	}
+	freshPrimary, err := r.getMysqlAuthoritativeHealthyPrimaryForReplicaRepair(ctx, cluster)
+	if err != nil || freshPrimary.Name != primary.Name || freshPrimary.UID != primary.UID {
+		return fmt.Errorf("established replica repair primary changed during ancestry proof")
+	}
+	return nil
 }
 
 func (r *MysqlClusterReconciler) reconcileMysqlReplicaChannel(
@@ -87,6 +206,53 @@ func (r *MysqlClusterReconciler) reconcileMysqlReplicaChannel(
 	if err != nil {
 		return mysqlReplicaConvergenceResult{}, err
 	}
+	ordinal, err := mysqlStatefulSetPodOrdinal(freshPod)
+	if err != nil {
+		return mysqlReplicaConvergenceResult{}, err
+	}
+	entry, hasProvenance, err := mysqlGTIDBootstrapEntry(cluster, ordinal)
+	if err != nil {
+		return mysqlReplicaConvergenceResult{}, err
+	}
+	establishedChannelRepair := false
+	if !observation.Channel.Configured {
+		strictBootstrap, err := mysqlReplicaNeedsStrictBootstrapProof(cluster, ordinal)
+		if err != nil {
+			return mysqlReplicaConvergenceResult{}, err
+		}
+		if strictBootstrap {
+			ready, barrier, err := r.reconcileMysqlScaleUpGTIDBootstrap(
+				ctx,
+				cluster,
+				mysqlStatefulSetMember{Ordinal: ordinal, Pod: freshPod},
+			)
+			if err != nil {
+				return mysqlReplicaConvergenceResult{}, err
+			}
+			if barrier {
+				return mysqlReplicaConvergenceResult{Action: mysqlReplicaConvergenceProvenance, Mutated: true}, nil
+			}
+			if !ready {
+				return mysqlReplicaConvergenceResult{}, fmt.Errorf("replica ordinal %d lacks verified GTID bootstrap provenance", ordinal)
+			}
+		} else {
+			if err := r.proveMysqlEstablishedReplicaChannelRepair(ctx, cluster, freshPod); err != nil {
+				return mysqlReplicaConvergenceResult{}, err
+			}
+			establishedChannelRepair = true
+		}
+	} else if hasProvenance {
+		reference, err := r.observeMysqlElectionReference(ctx, freshPod, cluster)
+		if err != nil {
+			return mysqlReplicaConvergenceResult{}, err
+		}
+		if entry.ServerUUID != reference.ServerUUID {
+			return mysqlReplicaConvergenceResult{}, fmt.Errorf("replica ordinal %d MySQL server identity changed", ordinal)
+		}
+		if err := r.validateMysqlGTIDBootstrapIdentity(ctx, cluster, freshPod, reference.ServerUUID); err != nil {
+			return mysqlReplicaConvergenceResult{}, err
+		}
+	}
 
 	action := classifyMysqlReplicaConvergence(observation.Channel, cluster.Spec.MasterService)
 	switch action {
@@ -114,6 +280,11 @@ func (r *MysqlClusterReconciler) reconcileMysqlReplicaChannel(
 			currentPod.Name,
 			currentOrdinal,
 		)
+	}
+	if establishedChannelRepair {
+		if err := r.proveMysqlEstablishedReplicaChannelRepair(ctx, cluster, currentPod); err != nil {
+			return mysqlReplicaConvergenceResult{}, err
+		}
 	}
 
 	var command string

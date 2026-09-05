@@ -19,6 +19,10 @@ import (
 
 const upgradePrimaryUUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
+func mysqlReplacementServerUUID(ordinal int32) string {
+	return fmt.Sprintf("%08d-bbbb-cccc-dddd-eeeeeeeeeeee", ordinal)
+}
+
 func TestUpgradeReplacementStatusValidation(t *testing.T) {
 	for _, scenario := range []string{"delete", "waiting", "verifying", "future", "empty-old", "empty-name", "zero-ordinal", "missing-new", "same-new", "early-new", "wrong-top", "unknown-top", "dynamic-membership"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -170,6 +174,17 @@ func newReplacementFixture(t *testing.T, primaryOrdinal int32) *replacementFixtu
 		pod.Labels[LabelMysqlRole], pod.Labels[LegacyLabelRole] = role, role
 		f.put(pod)
 	}
+	cluster.Status.GTIDBootstrap = nil
+	for ordinal := int32(1); ordinal <= 3; ordinal++ {
+		pod := f.pod(ordinal)
+		serverUUID := mysqlReplacementServerUUID(ordinal)
+		if ordinal == primaryOrdinal {
+			serverUUID = upgradePrimaryUUID
+		}
+		cluster.Status.GTIDBootstrap = append(cluster.Status.GTIDBootstrap, databasev1.MysqlClusterGTIDBootstrapStatus{
+			Ordinal: ordinal, PVCUID: mysqlTestPVCUID(pod), ServerUUID: serverUUID, BootstrapGTIDSet: "",
+		})
+	}
 	storeUpgradeTestCluster(t, base, cluster)
 	r.execCommandOnPodFn = func(pod *corev1.Pod, command string) (string, error) {
 		if f.sqlHook != nil {
@@ -179,7 +194,12 @@ func newReplacementFixture(t *testing.T, primaryOrdinal int32) *replacementFixtu
 		case mysqlWriteSafetyObservationCommand():
 			return "1\t1\tON\tON\n", nil
 		case mysqlElectionReferenceCommand():
-			return f.source + "\t\n", nil
+			ordinal, _ := mysqlStatefulSetPodOrdinal(pod)
+			serverUUID := mysqlReplacementServerUUID(ordinal)
+			if pod.Name == cluster.Status.HA.Primary {
+				serverUUID = f.source
+			}
+			return serverUUID + "\t\n", nil
 		case mysqlShowSlaveStatusCommand():
 			if channel, ok := f.channels[pod.Name]; ok {
 				return channel, nil

@@ -105,6 +105,13 @@ func validateMysqlClusterReplicaTransitionStatus(status *databasev1.MysqlCluster
 			*status.LastConvergedReplicas,
 		)
 	}
+	if status.LastConvergedReplicas != nil && *status.LastConvergedReplicas > databasev1.MysqlClusterMaxReplicas {
+		return fmt.Errorf(
+			"lastConvergedReplicas must not exceed %d, got %d",
+			databasev1.MysqlClusterMaxReplicas,
+			*status.LastConvergedReplicas,
+		)
+	}
 
 	transition := status.ReplicaTransition
 	if transition == nil {
@@ -119,9 +126,23 @@ func validateMysqlClusterReplicaTransitionStatus(status *databasev1.MysqlCluster
 			transition.FromReplicas,
 		)
 	}
+	if transition.FromReplicas > databasev1.MysqlClusterMaxReplicas {
+		return fmt.Errorf(
+			"replicaTransition.fromReplicas must not exceed %d, got %d",
+			databasev1.MysqlClusterMaxReplicas,
+			transition.FromReplicas,
+		)
+	}
 	if transition.TargetReplicas <= 0 {
 		return fmt.Errorf(
 			"replicaTransition.targetReplicas must be greater than zero, got %d",
+			transition.TargetReplicas,
+		)
+	}
+	if transition.TargetReplicas > databasev1.MysqlClusterMaxReplicas {
+		return fmt.Errorf(
+			"replicaTransition.targetReplicas must not exceed %d, got %d",
+			databasev1.MysqlClusterMaxReplicas,
 			transition.TargetReplicas,
 		)
 	}

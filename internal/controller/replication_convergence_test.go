@@ -2,7 +2,9 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -160,7 +162,16 @@ func TestMysqlReplicationConvergenceEngine(t *testing.T) {
 			g := NewWithT(t)
 			ctx := context.Background()
 			cluster, statefulSet, replica := newMysqlReplicaConvergenceFixture(t)
-			memoryClient := newStatefulSetReconcileMemoryClient(statefulSet, replica)
+			objects := []client.Object{statefulSet, replica}
+			configureWithProvenance := testCase.expectedResult.Action == mysqlReplicaConvergenceConfigure
+			if configureWithProvenance {
+				pvc := mysqlGTIDTestPVC(replica, "replica-convergence-pvc")
+				cluster.Status.GTIDBootstrap = []databasev1.MysqlClusterGTIDBootstrapStatus{{
+					Ordinal: 2, PVCUID: "replica-convergence-pvc", ServerUUID: mysqlGTIDTestUUID2, BootstrapGTIDSet: mysqlGTIDTestUUID2 + ":1",
+				}}
+				objects = append(objects, pvc)
+			}
+			memoryClient := newStatefulSetReconcileMemoryClient(objects...)
 			commands := make([]string, 0, 3)
 			reconciler := &MysqlClusterReconciler{
 				Client: memoryClient,
@@ -169,6 +180,15 @@ func TestMysqlReplicationConvergenceEngine(t *testing.T) {
 					g.Expect(commandPod.UID).To(Equal(replica.UID))
 					if command == mysqlWriteSafetyObservationCommand() {
 						return "1\t1\tON\tON\n", nil
+					}
+					if command == mysqlSourceCapabilityCommand() {
+						return "1\t1\n", nil
+					}
+					if command == mysqlGTIDBootstrapObservationCommand() {
+						return mysqlGTIDBootstrapOutput(mysqlGTIDTestUUID2, "", mysqlGTIDTestUUID2+":1", true), nil
+					}
+					if command == mysqlElectionReferenceCommand() {
+						return phase5BElectionReferenceOutput(mysqlGTIDTestUUID2, mysqlGTIDTestUUID2+":1"), nil
 					}
 					if command == mysqlShowSlaveStatusCommand() {
 						return testCase.statusOutput(cluster.Spec.MasterService), nil
@@ -181,6 +201,14 @@ func TestMysqlReplicationConvergenceEngine(t *testing.T) {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(result).To(Equal(testCase.expectedResult))
 			expectedCommands := []string{mysqlWriteSafetyObservationCommand(), mysqlShowSlaveStatusCommand()}
+			if configureWithProvenance {
+				expectedCommands = append(expectedCommands,
+					mysqlWriteSafetyObservationCommand(),
+					mysqlSourceCapabilityCommand(),
+					mysqlShowSlaveStatusCommand(),
+					mysqlGTIDBootstrapObservationCommand(),
+				)
+			}
 			if testCase.expectedAction != nil {
 				expectedCommands = append(expectedCommands, testCase.expectedAction(cluster.Spec.MasterService))
 			}
@@ -374,6 +402,116 @@ func TestMysqlReplicationConvergenceWriteSafetyBarrier(t *testing.T) {
 	})
 }
 
+func TestMysqlEstablishedReplicaChannelLossRequiresEffectiveAncestry(t *testing.T) {
+	const (
+		primaryUUID      = "11111111-1111-1111-1111-111111111111"
+		replicaUUID      = "22222222-2222-2222-2222-222222222222"
+		replicaBootstrap = "22222222-2222-2222-2222-222222222222:1-5"
+		primaryRaw       = "11111111-1111-1111-1111-111111111111:1-120"
+		memberRaw        = "11111111-1111-1111-1111-111111111111:1-100,22222222-2222-2222-2222-222222222222:1-5"
+	)
+	testCases := []struct {
+		name              string
+		memberRaw         string
+		subsetOutput      string
+		omitReplicaProof  bool
+		pvcUID            string
+		observedReplicaID string
+		changeAuthority   bool
+		expectConfigure   bool
+		expectError       string
+	}{
+		{name: "effective subset allows established channel repair", memberRaw: memberRaw, subsetOutput: "1", expectConfigure: true},
+		{name: "local bootstrap divergence fails closed", memberRaw: "11111111-1111-1111-1111-111111111111:1-100,22222222-2222-2222-2222-222222222222:1-6", subsetOutput: "0", expectError: "not a subset"},
+		{name: "legitimate history ahead of primary fails closed", memberRaw: "11111111-1111-1111-1111-111111111111:1-121,22222222-2222-2222-2222-222222222222:1-5", subsetOutput: "0", expectError: "not a subset"},
+		{name: "malformed ancestry fails closed", memberRaw: memberRaw, subsetOutput: "malformed", expectError: "malformed MySQL member ancestry"},
+		{name: "missing provenance fails closed", memberRaw: memberRaw, subsetOutput: "1", omitReplicaProof: true, expectError: "missing durable GTID bootstrap provenance"},
+		{name: "changed PVC fails closed", memberRaw: memberRaw, subsetOutput: "1", pvcUID: "changed-pvc", expectError: "PVC identity changed"},
+		{name: "changed server UUID fails closed", memberRaw: memberRaw, subsetOutput: "1", observedReplicaID: "33333333-3333-3333-3333-333333333333", expectError: "MySQL server identity changed"},
+		{name: "changed primary authority fails closed", memberRaw: memberRaw, subsetOutput: "1", changeAuthority: true, expectError: "primary authority is ambiguous"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			g := NewWithT(t)
+			cluster := phase1HCluster("established-channel-loss", true)
+			cluster.ResourceVersion = "1"
+			cluster.Spec.Replicas = replicaCountCopy(2)
+			statefulSet := phase1HStatefulSet(t, cluster)
+			primary := phase1HPod(t, cluster, statefulSet, 1, "master", true)
+			replica := phase1HPod(t, cluster, statefulSet, 2, "slave", true)
+			cluster.Status.HA = phase4HAStatus(databasev1.MysqlClusterHAStateHealthy, primary)
+			if testCase.changeAuthority {
+				cluster.Status.HA.PrimaryUID = "stale-primary-uid"
+			}
+			cluster.Status.GTIDBootstrap = []databasev1.MysqlClusterGTIDBootstrapStatus{{
+				Ordinal: 1, PVCUID: mysqlTestPVCUID(primary), ServerUUID: primaryUUID, BootstrapGTIDSet: "",
+			}}
+			if !testCase.omitReplicaProof {
+				replicaPVCUID := mysqlTestPVCUID(replica)
+				if testCase.pvcUID != "" {
+					replicaPVCUID = testCase.pvcUID
+				}
+				cluster.Status.GTIDBootstrap = append(cluster.Status.GTIDBootstrap, databasev1.MysqlClusterGTIDBootstrapStatus{
+					Ordinal: 2, PVCUID: replicaPVCUID, ServerUUID: replicaUUID, BootstrapGTIDSet: replicaBootstrap,
+				})
+			}
+			commands := make([]string, 0, 32)
+			reconciler := phase1HReconciler(t, cluster, statefulSet, primary, replica, phase1HEndpoints(cluster, primary))
+			reconciler.execCommandOnPodFn = func(pod *corev1.Pod, command string) (string, error) {
+				commands = append(commands, pod.Name+":"+command)
+				switch command {
+				case mysqlWriteSafetyObservationCommand():
+					if pod.Name == primary.Name {
+						return "0\t0\tON\tON\n", nil
+					}
+					return "1\t1\tON\tON\n", nil
+				case mysqlShowSlaveStatusCommand():
+					return "", nil
+				case mysqlSourceCapabilityCommand():
+					return "1\t1\n", nil
+				case mysqlElectionReferenceCommand():
+					if pod.Name == primary.Name {
+						return phase5BElectionReferenceOutput(primaryUUID, primaryRaw), nil
+					}
+					serverUUID := replicaUUID
+					if testCase.observedReplicaID != "" {
+						serverUUID = testCase.observedReplicaID
+					}
+					return phase5BElectionReferenceOutput(serverUUID, testCase.memberRaw), nil
+				case mysqlInitializeReplicaCommand(cluster.Spec.MasterService):
+					return "", nil
+				}
+				if pod.Name == primary.Name && strings.Contains(command, "GTID_SUBSET") {
+					if testCase.subsetOutput == "malformed" {
+						return "malformed", nil
+					}
+					return testCase.subsetOutput + "\t" + base64.StdEncoding.EncodeToString([]byte(primaryRaw)) + "\n", nil
+				}
+				return "", fmt.Errorf("unexpected command %s", command)
+			}
+
+			result, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), replica, cluster)
+			if testCase.expectError != "" {
+				g.Expect(err).To(MatchError(ContainSubstring(testCase.expectError)))
+				g.Expect(result).To(Equal(mysqlReplicaConvergenceResult{}))
+			} else {
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(result).To(Equal(mysqlReplicaConvergenceResult{Action: mysqlReplicaConvergenceConfigure, Mutated: true}))
+			}
+			configureCommand := replica.Name + ":" + mysqlInitializeReplicaCommand(cluster.Spec.MasterService)
+			if testCase.expectConfigure {
+				g.Expect(commands).To(ContainElement(configureCommand))
+				joined := strings.Join(commands, "\n")
+				g.Expect(joined).To(ContainSubstring("GTID_SUBTRACT"))
+				g.Expect(joined).To(ContainSubstring(base64.StdEncoding.EncodeToString([]byte(replicaBootstrap))))
+			} else {
+				g.Expect(commands).NotTo(ContainElement(configureCommand))
+				g.Expect(commands).NotTo(ContainElement(replica.Name + ":" + mysqlConfigureReplicaCommand(cluster.Spec.MasterService)))
+			}
+		})
+	}
+}
+
 func TestMysqlReplicationConvergenceSafety(t *testing.T) {
 	t.Run("malformed observation returns error without corrective mutation", func(t *testing.T) {
 		g := NewWithT(t)
@@ -432,10 +570,14 @@ func TestMysqlReplicationConvergenceSafety(t *testing.T) {
 	t.Run("mutation SQL error is propagated", func(t *testing.T) {
 		g := NewWithT(t)
 		cluster, statefulSet, replica := newMysqlReplicaConvergenceFixture(t)
+		pvc := mysqlGTIDTestPVC(replica, "replica-convergence-pvc")
+		cluster.Status.GTIDBootstrap = []databasev1.MysqlClusterGTIDBootstrapStatus{{
+			Ordinal: 2, PVCUID: "replica-convergence-pvc", ServerUUID: mysqlGTIDTestUUID2, BootstrapGTIDSet: mysqlGTIDTestUUID2 + ":1",
+		}}
 		mutationErr := errors.New("mutation failed")
 		commands := make([]string, 0, 3)
 		reconciler := &MysqlClusterReconciler{
-			Client: newStatefulSetReconcileMemoryClient(statefulSet, replica),
+			Client: newStatefulSetReconcileMemoryClient(statefulSet, replica, pvc),
 			execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
 				commands = append(commands, command)
 				if command == mysqlWriteSafetyObservationCommand() {
@@ -443,6 +585,15 @@ func TestMysqlReplicationConvergenceSafety(t *testing.T) {
 				}
 				if command == mysqlShowSlaveStatusCommand() {
 					return "", nil
+				}
+				if command == mysqlSourceCapabilityCommand() {
+					return "1\t1\n", nil
+				}
+				if command == mysqlGTIDBootstrapObservationCommand() {
+					return mysqlGTIDBootstrapOutput(mysqlGTIDTestUUID2, "", mysqlGTIDTestUUID2+":1", true), nil
+				}
+				if command == mysqlElectionReferenceCommand() {
+					return phase5BElectionReferenceOutput(mysqlGTIDTestUUID2, mysqlGTIDTestUUID2+":1"), nil
 				}
 				return "", mutationErr
 			},
@@ -453,6 +604,10 @@ func TestMysqlReplicationConvergenceSafety(t *testing.T) {
 		g.Expect(commands).To(Equal([]string{
 			mysqlWriteSafetyObservationCommand(),
 			mysqlShowSlaveStatusCommand(),
+			mysqlWriteSafetyObservationCommand(),
+			mysqlSourceCapabilityCommand(),
+			mysqlShowSlaveStatusCommand(),
+			mysqlGTIDBootstrapObservationCommand(),
 			mysqlInitializeReplicaCommand(cluster.Spec.MasterService),
 		}))
 	})

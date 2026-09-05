@@ -43,6 +43,23 @@ func newStatefulSetReconcileMemoryClient(objects ...client.Object) *statefulSetR
 		}
 		memoryClient.objects[memoryClient.objectKey(stored)] = stored
 	}
+	for _, object := range objects {
+		pod, ok := object.(*corev1.Pod)
+		if !ok {
+			continue
+		}
+		claimName, err := mysqlPodDataPVCName(pod)
+		if err != nil {
+			continue
+		}
+		pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+			Name: claimName, Namespace: pod.Namespace, UID: types.UID(mysqlTestPVCUID(pod)), ResourceVersion: "1",
+		}}
+		key := memoryClient.objectKey(pvc)
+		if _, exists := memoryClient.objects[key]; !exists {
+			memoryClient.objects[key] = pvc
+		}
+	}
 	return memoryClient
 }
 
@@ -68,6 +85,8 @@ func copyStatefulSetReconcileObject(destination, source client.Object) {
 		*destination = *source.(*corev1.ConfigMap).DeepCopy()
 	case *corev1.Endpoints:
 		*destination = *source.(*corev1.Endpoints).DeepCopy()
+	case *corev1.PersistentVolumeClaim:
+		*destination = *source.(*corev1.PersistentVolumeClaim).DeepCopy()
 	case *appsv1.StatefulSet:
 		*destination = *source.(*appsv1.StatefulSet).DeepCopy()
 	case *databasev1.MysqlCluster:

@@ -272,6 +272,9 @@ func (r *MysqlClusterReconciler) proveMysqlUpgradeReplicas(ctx context.Context, 
 	if err != nil {
 		return nil, false, fmt.Errorf("upgrade primary source identity observation failed")
 	}
+	if err := r.validateMysqlGTIDBootstrapIdentity(ctx, cluster, primary, reference.ServerUUID); err != nil {
+		return nil, false, fmt.Errorf("upgrade primary persistent identity is invalid")
+	}
 	for _, member := range members {
 		if member.Pod.UID == "" || !member.Pod.DeletionTimestamp.IsZero() {
 			return nil, false, nil
@@ -294,6 +297,13 @@ func (r *MysqlClusterReconciler) proveMysqlUpgradeReplicas(ctx context.Context, 
 		}
 		if replication.Channel.MasterUUID == "" || replication.Channel.MasterUUID != reference.ServerUUID {
 			return nil, false, fmt.Errorf("upgrade replica lacks healthy replication with verified primary source identity")
+		}
+		memberReference, err := r.observeMysqlElectionReference(ctx, member.Pod, cluster)
+		if err != nil {
+			return nil, false, fmt.Errorf("upgrade replica server identity observation failed")
+		}
+		if err := r.validateMysqlGTIDBootstrapIdentity(ctx, cluster, member.Pod, memberReference.ServerUUID); err != nil {
+			return nil, false, fmt.Errorf("upgrade replica persistent identity is invalid")
 		}
 	}
 	if cluster.Status.Upgrade.Stage == databasev1.MysqlClusterUpgradeStagePrimaryReady {
@@ -330,6 +340,10 @@ func (r *MysqlClusterReconciler) recheckMysqlUpgradeProof(ctx context.Context, c
 		if member.Ordinal != before.Ordinal || member.Pod.Name != before.Pod.Name || member.Pod.UID != before.Pod.UID ||
 			!member.Pod.DeletionTimestamp.IsZero() || !mysqlStatefulSetPodHealthy(member.Pod) || imageErr != nil || image != oldImage || roleErr != nil || role != oldRole {
 			return fmt.Errorf("upgrade member identity or safety changed during verification")
+		}
+		reference, err := r.observeMysqlElectionReference(ctx, member.Pod, cluster)
+		if err != nil || r.validateMysqlGTIDBootstrapIdentity(ctx, cluster, member.Pod, reference.ServerUUID) != nil {
+			return fmt.Errorf("upgrade member persistent identity changed during verification")
 		}
 	}
 	return r.recheckMysqlUpgradeSnapshot(ctx, cluster)

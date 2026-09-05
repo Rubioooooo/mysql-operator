@@ -42,12 +42,21 @@ func mysqlSourceCapabilityCommand() string {
 	return mysqlRootClientCommand + ` -Nse "SELECT @@GLOBAL.log_bin, @@GLOBAL.log_slave_updates;"`
 }
 
-func mysqlGTIDComparisonCommand(failedPrimaryGTIDSet string) string {
+func mysqlGTIDComparisonCommand(failedPrimaryGTIDSet string, trustedBootstrapGTIDSet ...string) string {
 	encoded := base64.StdEncoding.EncodeToString([]byte(failedPrimaryGTIDSet))
+	trusted := ""
+	if len(trustedBootstrapGTIDSet) > 0 {
+		trusted = trustedBootstrapGTIDSet[0]
+	}
+	trustedEncoded := base64.StdEncoding.EncodeToString([]byte(trusted))
 	return mysqlRootClientCommand + fmt.Sprintf(
-		` -Nse "SELECT GTID_SUBSET(FROM_BASE64('%s'), @@GLOBAL.gtid_executed), GTID_SUBSET(@@GLOBAL.gtid_executed, FROM_BASE64('%s')), REPLACE(TO_BASE64(@@GLOBAL.gtid_executed), CHAR(10), '');"`,
+		` -Nse "SELECT GTID_SUBSET(GTID_SUBTRACT(FROM_BASE64('%s'), FROM_BASE64('%s')), GTID_SUBTRACT(@@GLOBAL.gtid_executed, FROM_BASE64('%s'))), GTID_SUBSET(GTID_SUBTRACT(@@GLOBAL.gtid_executed, FROM_BASE64('%s')), GTID_SUBTRACT(FROM_BASE64('%s'), FROM_BASE64('%s'))), REPLACE(TO_BASE64(@@GLOBAL.gtid_executed), CHAR(10), '');"`,
 		encoded,
+		trustedEncoded,
+		trustedEncoded,
+		trustedEncoded,
 		encoded,
+		trustedEncoded,
 	)
 }
 
@@ -171,10 +180,14 @@ func (r *MysqlClusterReconciler) compareMysqlCandidateGTID(
 	cluster *databasev1.MysqlCluster,
 	failedPrimaryGTIDSet string,
 ) (mysqlGTIDComparison, error) {
+	trusted, err := mysqlTrustedBootstrapGTIDSet(cluster)
+	if err != nil {
+		return mysqlGTIDComparison{}, err
+	}
 	if err := r.validateMysqlPodBeforeSQL(ctx, pod, cluster, "GTID comparison SQL"); err != nil {
 		return mysqlGTIDComparison{}, err
 	}
-	output, err := r.executeCommandOnPod(pod, mysqlGTIDComparisonCommand(failedPrimaryGTIDSet))
+	output, err := r.executeCommandOnPod(pod, mysqlGTIDComparisonCommand(failedPrimaryGTIDSet, trusted))
 	if err != nil {
 		return mysqlGTIDComparison{}, fmt.Errorf("failed to compare GTID sets on Pod %s/%s: %w", pod.Namespace, pod.Name, err)
 	}
@@ -237,6 +250,9 @@ func (r *MysqlClusterReconciler) validateMysqlFailedPrimaryElectionReference(
 	if err != nil {
 		return nil, mysqlElectionReference{}, err
 	}
+	if err := r.validateMysqlGTIDBootstrapIdentity(ctx, cluster, pod, reference.ServerUUID); err != nil {
+		return nil, mysqlElectionReference{}, err
+	}
 	return pod, reference, nil
 }
 
@@ -259,6 +275,13 @@ func (r *MysqlClusterReconciler) mysqlCandidateMatchesReference(
 	}
 	if !sourceReady {
 		return false, nil
+	}
+	candidateReference, err := r.observeMysqlElectionReference(ctx, pod, cluster)
+	if err != nil {
+		return false, err
+	}
+	if err := r.validateMysqlGTIDBootstrapIdentity(ctx, cluster, pod, candidateReference.ServerUUID); err != nil {
+		return false, err
 	}
 	replication, err := r.observeMysqlMemberReplication(ctx, pod, cluster)
 	if err != nil {

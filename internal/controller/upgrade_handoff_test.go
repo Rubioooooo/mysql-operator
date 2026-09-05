@@ -40,11 +40,15 @@ func newHandoffTest(t *testing.T, primary int32) *handoffTestFixture {
 	t.Helper()
 	f := newReplacementFixture(t, primary)
 	h := &handoffTestFixture{replacementFixture: f, nodes: map[string]*handoffTestNode{}, ancestry: true, autoRoute: true}
-	primaryUUID := fmt.Sprintf("%08d-bbbb-cccc-dddd-eeeeeeeeeeee", primary)
+	primaryUUID := upgradePrimaryUUID
 	for ordinal := int32(1); ordinal <= 3; ordinal++ {
 		pod := f.pod(ordinal)
 		replica := ordinal != primary
-		node := &handoffTestNode{ro: replica, sro: replica, gtidReady: true, source: true, uuid: fmt.Sprintf("%08d-bbbb-cccc-dddd-eeeeeeeeeeee", ordinal), gtid: primaryUUID + ":1-10"}
+		serverUUID := mysqlReplacementServerUUID(ordinal)
+		if ordinal == primary {
+			serverUUID = primaryUUID
+		}
+		node := &handoffTestNode{ro: replica, sro: replica, gtidReady: true, source: true, uuid: serverUUID, gtid: primaryUUID + ":1-10"}
 		if replica {
 			f.image(ordinal, "mysql:new")
 			node.channel = mysqlReplicationChannelObservation{Configured: true, MasterHost: f.cluster.Spec.MasterService, MasterUUID: primaryUUID, MasterUser: "replica", AutoPosition: "1", IORunning: "Yes", SQLRunning: "Yes"}
@@ -52,6 +56,13 @@ func newHandoffTest(t *testing.T, primary int32) *handoffTestFixture {
 		h.nodes[pod.Name] = node
 	}
 	cluster := f.stored()
+	cluster.Status.GTIDBootstrap = nil
+	for ordinal := int32(1); ordinal <= 3; ordinal++ {
+		pod := f.pod(ordinal)
+		cluster.Status.GTIDBootstrap = append(cluster.Status.GTIDBootstrap, databasev1.MysqlClusterGTIDBootstrapStatus{
+			Ordinal: ordinal, PVCUID: mysqlTestPVCUID(pod), ServerUUID: h.nodes[pod.Name].uuid, BootstrapGTIDSet: "",
+		})
+	}
 	cluster.Status.Upgrade.Stage = databasev1.MysqlClusterUpgradeStageReplicasVerified
 	f.put(cluster)
 	f.r.execCommandOnPodFn = h.exec
@@ -231,7 +242,6 @@ func TestHandoffCompletePrimaryLastRestartEveryBarrier(t *testing.T) {
 			old.Spec.Containers[0].Image = "mysql:new"
 			old.Spec.InitContainers[0].Image = "mysql:new"
 			h.put(old)
-			h.nodes[old.Name].uuid = "99999999-bbbb-cccc-dddd-eeeeeeeeeeee"
 			g.Expect(h.step()).To(Succeed())
 			g.Expect(h.stored().Status.Upgrade.Replacement.NewPodUID).To(Equal(string(old.UID)))
 			g.Expect(h.step()).To(Succeed())

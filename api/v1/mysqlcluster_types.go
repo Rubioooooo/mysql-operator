@@ -40,6 +40,11 @@ type ResourceRequirements struct {
 	Limits   ResourceLimits   `json:"limits"`
 }
 
+const (
+	MysqlClusterMinReplicas int32 = 1
+	MysqlClusterMaxReplicas int32 = 64
+)
+
 // MysqlClusterSpec defines the desired state of MysqlCluster.
 //
 // +kubebuilder:validation:XValidation:rule="self.masterService != self.slaveService",message="masterService and slaveService must be different"
@@ -53,6 +58,7 @@ type MysqlClusterSpec struct {
 
 	// Replicas is the desired number of MySQL members.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=64
 	// +kubebuilder:default=3
 	Replicas *int32 `json:"replicas,omitempty"`
 
@@ -95,9 +101,13 @@ const (
 // MysqlClusterReplicaTransitionStatus records an active replica-count transition.
 type MysqlClusterReplicaTransitionStatus struct {
 	// FromReplicas is the last stable replica count from which the transition began.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=64
 	FromReplicas int32 `json:"fromReplicas"`
 
 	// TargetReplicas is the current desired replica count for the transition.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=64
 	TargetReplicas int32 `json:"targetReplicas"`
 }
 
@@ -174,6 +184,7 @@ const (
 // +kubebuilder:validation:XValidation:rule="self.stage == 'Verifying' || !has(self.newPodUID) || self.newPodUID.size() == 0",message="only Verifying may carry newPodUID"
 type MysqlClusterUpgradeReplacementStatus struct {
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=64
 	Ordinal int32 `json:"ordinal"`
 	// +kubebuilder:validation:MinLength=1
 	PodName string `json:"podName"`
@@ -288,6 +299,10 @@ type MysqlClusterHAStatus struct {
 // MysqlClusterStatus defines the observed state of MysqlCluster.
 //
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.credentialsSecretUID) || (has(self.credentialsSecretUID) && self.credentialsSecretUID == oldSelf.credentialsSecretUID)",message="credentialsSecretUID is write-once and cannot be changed or cleared"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.gtidBootstrap) || (has(self.gtidBootstrap) && self.gtidBootstrap.size() >= oldSelf.gtidBootstrap.size())",message="gtidBootstrap entries cannot be removed"
+// +kubebuilder:validation:XValidation:rule="!has(self.gtidBootstrap) || self.gtidBootstrap.all(entry, entry.ordinal <= self.gtidBootstrap.size())",message="gtidBootstrap ordinals must be canonical and contiguous"
+// +kubebuilder:validation:XValidation:rule="!has(self.gtidBootstrap) || self.gtidBootstrap.all(entry, self.gtidBootstrap.filter(other, other.pvcUID == entry.pvcUID).size() == 1)",message="gtidBootstrap pvcUID values must be unique"
+// +kubebuilder:validation:XValidation:rule="!has(self.gtidBootstrap) || self.gtidBootstrap.all(entry, self.gtidBootstrap.filter(other, other.serverUUID == entry.serverUUID).size() == 1)",message="gtidBootstrap serverUUID values must be unique"
 type MysqlClusterStatus struct {
 	// ObservedGeneration is the most recent generation observed by the controller.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -307,6 +322,8 @@ type MysqlClusterStatus struct {
 
 	// LastConvergedReplicas is the replica count of the most recently completed
 	// stable lifecycle state.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=64
 	LastConvergedReplicas *int32 `json:"lastConvergedReplicas,omitempty"`
 
 	// LastConvergedImage is the image last proven common to the controlled workload.
@@ -326,6 +343,14 @@ type MysqlClusterStatus struct {
 	// Secret accepted for this MysqlCluster lifecycle.
 	CredentialsSecretUID string `json:"credentialsSecretUID,omitempty"`
 
+	// GTIDBootstrap is the immutable, append-only identity and instance-local
+	// bootstrap history for every ordinal ever admitted to this cluster.
+	// Historical entries are retained after scale-down.
+	// +listType=map
+	// +listMapKey=ordinal
+	// +kubebuilder:validation:MaxItems=64
+	GTIDBootstrap []MysqlClusterGTIDBootstrapStatus `json:"gtidBootstrap,omitempty"`
+
 	// Conditions describe the current reconciliation and availability state.
 	// +listType=map
 	// +listMapKey=type
@@ -338,6 +363,36 @@ type MysqlClusterStatus struct {
 	// Slaves is retained for compatibility with the original API.
 	// Deprecated: replica membership will be represented by the new status model.
 	Slaves []string `json:"slaves,omitempty"`
+}
+
+// MysqlClusterGTIDBootstrapStatus binds one StatefulSet ordinal and persistent
+// data volume to its MySQL instance identity and instance-local bootstrap GTIDs.
+//
+// +kubebuilder:validation:XValidation:rule="self.ordinal == oldSelf.ordinal",message="GTID bootstrap ordinal is immutable"
+// +kubebuilder:validation:XValidation:rule="self.pvcUID == oldSelf.pvcUID",message="GTID bootstrap PVC UID is immutable"
+// +kubebuilder:validation:XValidation:rule="self.serverUUID == oldSelf.serverUUID",message="GTID bootstrap server UUID is immutable"
+// +kubebuilder:validation:XValidation:rule="self.bootstrapGTIDSet == oldSelf.bootstrapGTIDSet",message="GTID bootstrap GTID set is immutable"
+type MysqlClusterGTIDBootstrapStatus struct {
+	// Ordinal is the canonical one-based StatefulSet member ordinal.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=64
+	Ordinal int32 `json:"ordinal"`
+
+	// PVCUID is the immutable Kubernetes UID of the member's data PVC.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	PVCUID string `json:"pvcUID"`
+
+	// ServerUUID is the MySQL instance UUID stored on that persistent volume.
+	// +kubebuilder:validation:MinLength=36
+	// +kubebuilder:validation:MaxLength=36
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
+	ServerUUID string `json:"serverUUID"`
+
+	// BootstrapGTIDSet is the raw instance-local GTID set captured before the
+	// member is attached to replication. Empty is authoritative and valid.
+	// +kubebuilder:validation:MaxLength=262144
+	BootstrapGTIDSet string `json:"bootstrapGTIDSet"`
 }
 
 // +kubebuilder:object:root=true

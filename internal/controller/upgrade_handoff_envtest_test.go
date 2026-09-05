@@ -51,12 +51,12 @@ func handoffEnvFixture(ctx context.Context, name string) (*MysqlClusterReconcile
 		pod := &corev1.Pod{}
 		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: mysqlStatefulSetPodName(cluster, ordinal)}, pod)).To(Succeed())
 		replica := ordinal != 1
-		n := &handoffTestNode{ro: replica, sro: replica, gtidReady: true, source: true, uuid: fmt.Sprintf("%08d-bbbb-cccc-dddd-eeeeeeeeeeee", ordinal), gtid: "00000001-bbbb-cccc-dddd-eeeeeeeeeeee:1-10"}
+		n := &handoffTestNode{ro: replica, sro: replica, gtidReady: true, source: true, uuid: replacementEnvServerUUID(ordinal), gtid: replacementEnvServerUUID(1) + ":1-10"}
 		if replica {
 			pod.Spec.Containers[0].Image = cluster.Status.Upgrade.TargetImage
 			pod.Spec.InitContainers[0].Image = cluster.Status.Upgrade.TargetImage
 			Expect(k8sClient.Update(ctx, pod)).To(Succeed())
-			n.channel = mysqlReplicationChannelObservation{Configured: true, MasterHost: cluster.Spec.MasterService, MasterUUID: "00000001-bbbb-cccc-dddd-eeeeeeeeeeee", MasterUser: "replica", AutoPosition: "1", IORunning: "Yes", SQLRunning: "Yes"}
+			n.channel = mysqlReplicationChannelObservation{Configured: true, MasterHost: cluster.Spec.MasterService, MasterUUID: replacementEnvServerUUID(1), MasterUser: "replica", AutoPosition: "1", IORunning: "Yes", SQLRunning: "Yes"}
 		}
 		sim.nodes[pod.Name] = n
 	}
@@ -197,7 +197,6 @@ var _ = Describe("Phase 7-C handoff API-server contract", func() {
 				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
 				pod.Status = old.Status
 				Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
-				sim.nodes[pod.Name].uuid = "99999999-bbbb-cccc-dddd-eeeeeeeeeeee"
 			}
 			if race {
 				c.beforeDelete = func(pod *corev1.Pod) {

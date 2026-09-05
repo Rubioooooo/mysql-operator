@@ -238,16 +238,23 @@ func TestStatefulSetInitializationStages(t *testing.T) {
 	g := NewWithT(t)
 	ctx := context.Background()
 	cluster := phase1HCluster("initial-stages", false)
+	cluster.ResourceVersion = "1"
 	cluster.Spec.Replicas = replicaCountCopy(2)
 	statefulSet := phase1HStatefulSet(t, cluster)
 	primary := statefulSetPodForLifecycleTest(t, cluster, statefulSet, 1)
 	replica := statefulSetPodForLifecycleTest(t, cluster, statefulSet, 2)
+	primary.UID = "initial-stages-primary"
+	replica.UID = "initial-stages-replica"
+	primaryPVC := mysqlGTIDTestPVC(primary, "initial-stages-primary-pvc")
+	replicaPVC := mysqlGTIDTestPVC(replica, "initial-stages-replica-pvc")
 	memoryClient := newStatefulSetReconcileMemoryClient(
 		cluster,
 		statefulSet,
 		phase1HCredentialSecret(cluster),
 		primary,
 		replica,
+		primaryPVC,
+		replicaPVC,
 	)
 	reconciler := &MysqlClusterReconciler{
 		Client: &lifecycleAnnotationPatchClient{statefulSetReconcileMemoryClient: memoryClient},
@@ -256,6 +263,25 @@ func TestStatefulSetInitializationStages(t *testing.T) {
 	stageAComplete := false
 	reconciler.execCommandOnPodFn = func(pod *corev1.Pod, command string) (string, error) {
 		switch {
+		case command == mysqlWriteSafetyObservationCommand():
+			if pod.Name == primary.Name {
+				return "0\t0\tON\tON\n", nil
+			}
+			return "1\t1\tON\tON\n", nil
+		case command == mysqlSourceCapabilityCommand():
+			return "1\t1\n", nil
+		case command == mysqlGTIDBootstrapObservationCommand():
+			if pod.Name == primary.Name {
+				return mysqlGTIDBootstrapOutput(mysqlGTIDTestUUID1, "", "", true), nil
+			}
+			return mysqlGTIDBootstrapOutput(mysqlGTIDTestUUID2, "", "", true), nil
+		case command == mysqlElectionReferenceCommand():
+			if pod.Name == primary.Name {
+				return phase5BElectionReferenceOutput(mysqlGTIDTestUUID1, ""), nil
+			}
+			return phase5BElectionReferenceOutput(mysqlGTIDTestUUID2, ""), nil
+		case pod.Name == primary.Name && command == mysqlShowSlaveStatusCommand():
+			return "", nil
 		case pod.Name == primary.Name && command == mysqlPreparePrimaryCommand():
 			return "", nil
 		case pod.Name == replica.Name && command == mysqlWriteSafetyObservationCommand():
@@ -273,6 +299,14 @@ func TestStatefulSetInitializationStages(t *testing.T) {
 	}
 
 	result, complete, err := reconciler.reconcileStatefulSetInitialization(ctx, cluster)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(complete).To(BeFalse())
+	g.Expect(result.RequeueAfter).To(Equal(mysqlInitializationConvergenceRequeueAfter))
+	g.Expect(cluster.Status.GTIDBootstrap).To(HaveLen(2))
+	expectMysqlPodRoleForTest(t, ctx, reconciler, primary, "")
+	expectMysqlPodRoleForTest(t, ctx, reconciler, replica, "")
+
+	result, complete, err = reconciler.reconcileStatefulSetInitialization(ctx, cluster)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(complete).To(BeFalse())
 	g.Expect(result.RequeueAfter).To(Equal(mysqlInitializationConvergenceRequeueAfter))
