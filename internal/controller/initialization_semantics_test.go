@@ -74,17 +74,24 @@ func TestMysqlInitializationSemanticConvergence(t *testing.T) {
 			Client: newStatefulSetReconcileMemoryClient(statefulSet, primary, replica),
 			execCommandOnPodFn: func(pod *corev1.Pod, command string) (string, error) {
 				commands = append(commands, command)
-				if pod.Name != replica.Name || command != mysqlShowSlaveStatusCommand() {
+				if pod.Name != replica.Name {
 					return "", fmt.Errorf("unexpected command for %s: %s", pod.Name, command)
 				}
-				return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Connecting", "Yes", "", ""), nil
+				switch command {
+				case mysqlWriteSafetyObservationCommand():
+					return "1\t1\tON\tON\n", nil
+				case mysqlShowSlaveStatusCommand():
+					return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Connecting", "Yes", "", ""), nil
+				default:
+					return "", fmt.Errorf("unexpected command for %s: %s", pod.Name, command)
+				}
 			},
 		}
 
 		converged, err := reconciler.reconcileMysqlInitializationTopology(ctx, primary.Name, []string{replica.Name}, *cluster)
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(converged).To(BeFalse())
-		g.Expect(commands).To(Equal([]string{mysqlShowSlaveStatusCommand()}))
+		g.Expect(commands).To(Equal([]string{mysqlWriteSafetyObservationCommand(), mysqlShowSlaveStatusCommand()}))
 		expectMysqlPodRoleForTest(t, ctx, reconciler, primary, "master")
 		expectMysqlPodRoleForTest(t, ctx, reconciler, replica, "")
 	})
@@ -95,10 +102,16 @@ func TestMysqlInitializationSemanticConvergence(t *testing.T) {
 		reconciler := &MysqlClusterReconciler{
 			Client: newStatefulSetReconcileMemoryClient(statefulSet, primary, replica),
 			execCommandOnPodFn: func(pod *corev1.Pod, command string) (string, error) {
-				if pod.Name != replica.Name || command != mysqlShowSlaveStatusCommand() {
+				if pod.Name != replica.Name {
 					return "", fmt.Errorf("unexpected command for %s: %s", pod.Name, command)
 				}
-				return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
+				if command == mysqlWriteSafetyObservationCommand() {
+					return "1\t1\tON\tON\n", nil
+				}
+				if command == mysqlShowSlaveStatusCommand() {
+					return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
+				}
+				return "", fmt.Errorf("unexpected command for %s: %s", pod.Name, command)
 			},
 		}
 
@@ -140,6 +153,9 @@ func TestMysqlInitializationSemanticConvergence(t *testing.T) {
 					if pod.Name != replica.Name {
 						return "", fmt.Errorf("unexpected command for %s: %s", pod.Name, command)
 					}
+					if command == mysqlWriteSafetyObservationCommand() {
+						return "1\t1\tON\tON\n", nil
+					}
 					if command == mysqlShowSlaveStatusCommand() {
 						return mysqlSlaveStatusOutputForTest(
 							testCase.masterHost,
@@ -179,6 +195,9 @@ func TestMysqlInitializationSemanticConvergence(t *testing.T) {
 		reconciler := &MysqlClusterReconciler{
 			Client: newStatefulSetReconcileMemoryClient(statefulSet, primary, replica),
 			execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
+				if command == mysqlWriteSafetyObservationCommand() {
+					return "1\t1\tON\tON\n", nil
+				}
 				if command == mysqlShowSlaveStatusCommand() {
 					return mysqlSlaveStatusOutputForTest("wrong-primary", "replica", "1", "No", "Yes", "", ""), nil
 				}
@@ -239,6 +258,8 @@ func TestStatefulSetInitializationStages(t *testing.T) {
 		switch {
 		case pod.Name == primary.Name && command == mysqlPreparePrimaryCommand():
 			return "", nil
+		case pod.Name == replica.Name && command == mysqlWriteSafetyObservationCommand():
+			return "1\t1\tON\tON\n", nil
 		case pod.Name == replica.Name && command == mysqlShowSlaveStatusCommand():
 			if stageAComplete {
 				return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil

@@ -16,6 +16,7 @@ const (
 	mysqlReplicaConvergenceConfigure   mysqlReplicaConvergenceAction = "configure"
 	mysqlReplicaConvergenceReconfigure mysqlReplicaConvergenceAction = "reconfigure"
 	mysqlReplicaConvergenceWait        mysqlReplicaConvergenceAction = "wait"
+	mysqlReplicaConvergenceWriteSafety mysqlReplicaConvergenceAction = "write-safety"
 )
 
 type mysqlReplicaConvergenceResult struct {
@@ -49,7 +50,40 @@ func (r *MysqlClusterReconciler) reconcileMysqlReplicaChannel(
 		return mysqlReplicaConvergenceResult{}, err
 	}
 
-	observation, err := r.observeMysqlMemberReplication(ctx, pod, cluster)
+	freshPod, err := r.getFreshMysqlReplicaConvergencePod(ctx, pod, cluster, "write-safety observation")
+	if err != nil {
+		return mysqlReplicaConvergenceResult{}, err
+	}
+	writeSafety, err := r.observeMysqlWriteSafety(ctx, freshPod, cluster)
+	if err != nil {
+		return mysqlReplicaConvergenceResult{}, err
+	}
+	if !writeSafety.GTIDReady {
+		return mysqlReplicaConvergenceResult{}, fmt.Errorf(
+			"replica Pod %s/%s is not GTID-ready for replication convergence: gtid_mode=%q, enforce_gtid_consistency=%q",
+			freshPod.Namespace,
+			freshPod.Name,
+			writeSafety.GTIDMode,
+			writeSafety.EnforceGTIDConsistency,
+		)
+	}
+	if !writeSafety.ReadOnly || !writeSafety.SuperReadOnly {
+		freshPod, err = r.getFreshMysqlReplicaConvergencePod(ctx, pod, cluster, "write-safety mutation")
+		if err != nil {
+			return mysqlReplicaConvergenceResult{}, err
+		}
+		if _, err := r.executeCommandOnPod(freshPod, mysqlSetSuperReadOnlyCommand()); err != nil {
+			return mysqlReplicaConvergenceResult{}, fmt.Errorf(
+				"failed to enable super_read_only on replica Pod %s/%s: %w",
+				freshPod.Namespace,
+				freshPod.Name,
+				err,
+			)
+		}
+		return mysqlReplicaConvergenceResult{Action: mysqlReplicaConvergenceWriteSafety, Mutated: true}, nil
+	}
+
+	observation, err := r.observeMysqlMemberReplication(ctx, freshPod, cluster)
 	if err != nil {
 		return mysqlReplicaConvergenceResult{}, err
 	}
@@ -62,48 +96,19 @@ func (r *MysqlClusterReconciler) reconcileMysqlReplicaChannel(
 		return mysqlReplicaConvergenceResult{Action: action}, nil
 	}
 
-	currentPod := &corev1.Pod{}
-	podKey := client.ObjectKeyFromObject(pod)
-	if err := r.Get(ctx, podKey, currentPod); err != nil {
-		return mysqlReplicaConvergenceResult{}, fmt.Errorf(
-			"failed to re-fetch replica Pod %s before %s: %w",
-			podKey,
-			action,
-			err,
-		)
-	}
-	if currentPod.UID != pod.UID {
-		return mysqlReplicaConvergenceResult{}, fmt.Errorf(
-			"refusing %s for replica Pod %s: observed UID %q changed to %q",
-			action,
-			podKey,
-			pod.UID,
-			currentPod.UID,
-		)
-	}
-	if err := r.validateMysqlPodBeforeSQL(ctx, currentPod, cluster, "replica convergence mutation SQL"); err != nil {
+	currentPod, err := r.getFreshMysqlReplicaConvergencePod(ctx, pod, cluster, string(action)+" mutation")
+	if err != nil {
 		return mysqlReplicaConvergenceResult{}, err
 	}
 	currentOrdinal, err := mysqlStatefulSetPodOrdinal(currentPod)
 	if err != nil {
 		return mysqlReplicaConvergenceResult{}, err
 	}
-	expectedPodName := mysqlStatefulSetPodName(cluster, currentOrdinal)
-	if currentPod.Name != expectedPodName {
-		return mysqlReplicaConvergenceResult{}, fmt.Errorf(
-			"Pod %s/%s ordinal identity does not match %s label %d: expected name %s",
-			currentPod.Namespace,
-			currentPod.Name,
-			statefulSetPodIndexLabel,
-			currentOrdinal,
-			expectedPodName,
-		)
-	}
 	if currentOrdinal != observation.Ordinal || currentPod.Name != observation.PodName {
 		return mysqlReplicaConvergenceResult{}, fmt.Errorf(
 			"refusing %s for replica Pod %s: observed member identity %s ordinal %d changed to %s ordinal %d",
 			action,
-			podKey,
+			client.ObjectKeyFromObject(pod),
 			observation.PodName,
 			observation.Ordinal,
 			currentPod.Name,
@@ -131,4 +136,68 @@ func (r *MysqlClusterReconciler) reconcileMysqlReplicaChannel(
 	}
 
 	return mysqlReplicaConvergenceResult{Action: action, Mutated: true}, nil
+}
+
+func (r *MysqlClusterReconciler) getFreshMysqlReplicaConvergencePod(
+	ctx context.Context,
+	pod *corev1.Pod,
+	cluster *databasev1.MysqlCluster,
+	purpose string,
+) (*corev1.Pod, error) {
+	observedOrdinal, err := mysqlStatefulSetPodOrdinal(pod)
+	if err != nil {
+		return nil, err
+	}
+	if expectedName := mysqlStatefulSetPodName(cluster, observedOrdinal); pod.Name != expectedName {
+		return nil, fmt.Errorf(
+			"Pod %s/%s ordinal identity does not match %s label %d: expected name %s",
+			pod.Namespace,
+			pod.Name,
+			statefulSetPodIndexLabel,
+			observedOrdinal,
+			expectedName,
+		)
+	}
+
+	podKey := client.ObjectKeyFromObject(pod)
+	freshPod := &corev1.Pod{}
+	if err := r.Get(ctx, podKey, freshPod); err != nil {
+		return nil, fmt.Errorf("failed to re-fetch replica Pod %s before %s: %w", podKey, purpose, err)
+	}
+	if freshPod.UID != pod.UID {
+		return nil, fmt.Errorf(
+			"refusing %s for replica Pod %s: observed UID %q changed to %q",
+			purpose,
+			podKey,
+			pod.UID,
+			freshPod.UID,
+		)
+	}
+	if err := r.validateMysqlPodBeforeSQL(ctx, freshPod, cluster, purpose+" SQL"); err != nil {
+		return nil, err
+	}
+	freshOrdinal, err := mysqlStatefulSetPodOrdinal(freshPod)
+	if err != nil {
+		return nil, err
+	}
+	if expectedName := mysqlStatefulSetPodName(cluster, freshOrdinal); freshPod.Name != expectedName {
+		return nil, fmt.Errorf(
+			"Pod %s/%s ordinal identity does not match %s label %d: expected name %s",
+			freshPod.Namespace,
+			freshPod.Name,
+			statefulSetPodIndexLabel,
+			freshOrdinal,
+			expectedName,
+		)
+	}
+	if freshOrdinal != observedOrdinal {
+		return nil, fmt.Errorf(
+			"refusing %s for replica Pod %s: observed ordinal %d changed to %d",
+			purpose,
+			podKey,
+			observedOrdinal,
+			freshOrdinal,
+		)
+	}
+	return freshPod, nil
 }

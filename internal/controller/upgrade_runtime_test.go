@@ -77,6 +77,9 @@ func newUpgradeTest(t *testing.T) (*MysqlClusterReconciler, *upgradeTestClient, 
 	c := &upgradeTestClient{statefulSetReconcileMemoryClient: newStatefulSetReconcileMemoryClient(objects...)}
 	r := &MysqlClusterReconciler{Client: c, Scheme: newStatefulSetReconcileTestScheme(t), SnapGoIsEnabled: true}
 	r.execCommandOnPodFn = func(_ *corev1.Pod, command string) (string, error) {
+		if command == mysqlWriteSafetyObservationCommand() {
+			return "1\t1\tON\tON\n", nil
+		}
 		if command != mysqlShowSlaveStatusCommand() {
 			t.Fatalf("unexpected SQL mutation in upgrade test")
 		}

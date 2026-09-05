@@ -176,6 +176,8 @@ func newReplacementFixture(t *testing.T, primaryOrdinal int32) *replacementFixtu
 			f.sqlHook(pod, command)
 		}
 		switch command {
+		case mysqlWriteSafetyObservationCommand():
+			return "1\t1\tON\tON\n", nil
 		case mysqlElectionReferenceCommand():
 			return f.source + "\t\n", nil
 		case mysqlShowSlaveStatusCommand():

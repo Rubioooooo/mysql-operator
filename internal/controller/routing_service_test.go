@@ -247,6 +247,8 @@ func TestInitializationTopologyPublicationOrdering(t *testing.T) {
 				switch {
 				case pod.Name == primary.Name && command == mysqlPreparePrimaryCommand():
 					return "", nil
+				case pod.Name == replica.Name && command == mysqlWriteSafetyObservationCommand():
+					return "1\t1\tON\tON\n", nil
 				case pod.Name == replica.Name && command == mysqlShowSlaveStatusCommand():
 					return "", nil
 				case pod.Name == replica.Name && command == mysqlInitializeReplicaCommand(initialPrimaryHost):
@@ -275,6 +277,9 @@ func TestInitializationTopologyPublicationOrdering(t *testing.T) {
 			execCommandOnPodFn: func(pod *corev1.Pod, command string) (string, error) {
 				assertNoPublishedRoles(g, reconciler, primary, replica)
 				commands = append(commands, pod.Name+":"+command)
+				if pod.Name == replica.Name && command == mysqlWriteSafetyObservationCommand() {
+					return "1\t1\tON\tON\n", nil
+				}
 				return "", nil
 			},
 		}
@@ -284,6 +289,7 @@ func TestInitializationTopologyPublicationOrdering(t *testing.T) {
 		g.Expect(converged).To(BeFalse())
 		g.Expect(commands).To(Equal([]string{
 			primary.Name + ":" + mysqlPreparePrimaryCommand(),
+			replica.Name + ":" + mysqlWriteSafetyObservationCommand(),
 			replica.Name + ":" + mysqlShowSlaveStatusCommand(),
 			replica.Name + ":" + mysqlInitializeReplicaCommand(initialPrimaryHost),
 		}))
@@ -308,6 +314,8 @@ func TestInitializationTopologyPublicationOrdering(t *testing.T) {
 				switch {
 				case pod.Name == primary.Name && command == mysqlPreparePrimaryCommand():
 					return "", nil
+				case pod.Name == replica.Name && command == mysqlWriteSafetyObservationCommand():
+					return "1\t1\tON\tON\n", nil
 				case pod.Name == replica.Name && command == mysqlShowSlaveStatusCommand():
 					return mysqlSlaveStatusOutputForTest(
 						"previous-primary",

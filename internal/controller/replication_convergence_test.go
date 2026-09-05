@@ -37,6 +37,28 @@ func newMysqlReplicaConvergenceFixture(
 	return cluster, statefulSet, replica
 }
 
+type mysqlReplicaConvergencePodReplacementClient struct {
+	*statefulSetReconcileMemoryClient
+	replacement *corev1.Pod
+	podGets     int
+}
+
+func (c *mysqlReplicaConvergencePodReplacementClient) Get(
+	ctx context.Context,
+	key client.ObjectKey,
+	object client.Object,
+	options ...client.GetOption,
+) error {
+	if _, isPod := object.(*corev1.Pod); isPod && key == client.ObjectKeyFromObject(c.replacement) {
+		c.podGets++
+		if c.podGets == 2 {
+			copyStatefulSetReconcileObject(object, c.replacement)
+			return nil
+		}
+	}
+	return c.statefulSetReconcileMemoryClient.Get(ctx, key, object, options...)
+}
+
 func TestMysqlReplicationConvergenceClassifier(t *testing.T) {
 	expectedMasterHost := "mysql-primary"
 	testCases := []struct {
@@ -139,12 +161,15 @@ func TestMysqlReplicationConvergenceEngine(t *testing.T) {
 			ctx := context.Background()
 			cluster, statefulSet, replica := newMysqlReplicaConvergenceFixture(t)
 			memoryClient := newStatefulSetReconcileMemoryClient(statefulSet, replica)
-			commands := make([]string, 0, 2)
+			commands := make([]string, 0, 3)
 			reconciler := &MysqlClusterReconciler{
 				Client: memoryClient,
 				execCommandOnPodFn: func(commandPod *corev1.Pod, command string) (string, error) {
 					commands = append(commands, command)
 					g.Expect(commandPod.UID).To(Equal(replica.UID))
+					if command == mysqlWriteSafetyObservationCommand() {
+						return "1\t1\tON\tON\n", nil
+					}
 					if command == mysqlShowSlaveStatusCommand() {
 						return testCase.statusOutput(cluster.Spec.MasterService), nil
 					}
@@ -155,7 +180,7 @@ func TestMysqlReplicationConvergenceEngine(t *testing.T) {
 			result, err := reconciler.reconcileMysqlReplicaChannel(ctx, replica, cluster)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(result).To(Equal(testCase.expectedResult))
-			expectedCommands := []string{mysqlShowSlaveStatusCommand()}
+			expectedCommands := []string{mysqlWriteSafetyObservationCommand(), mysqlShowSlaveStatusCommand()}
 			if testCase.expectedAction != nil {
 				expectedCommands = append(expectedCommands, testCase.expectedAction(cluster.Spec.MasterService))
 			}
@@ -170,6 +195,185 @@ func TestMysqlReplicationConvergenceEngine(t *testing.T) {
 	}
 }
 
+func TestMysqlReplicationConvergenceWriteSafetyBarrier(t *testing.T) {
+	t.Run("healthy writable replica is fenced without replication mutation or convergence", func(t *testing.T) {
+		g := NewWithT(t)
+		cluster, statefulSet, replica := newMysqlReplicaConvergenceFixture(t)
+		commands := make([]string, 0, 2)
+		reconciler := &MysqlClusterReconciler{
+			Client: newStatefulSetReconcileMemoryClient(statefulSet, replica),
+			execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
+				commands = append(commands, command)
+				switch command {
+				case mysqlWriteSafetyObservationCommand():
+					return "0\t0\tON\tON\n", nil
+				case mysqlShowSlaveStatusCommand():
+					return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
+				default:
+					return "", nil
+				}
+			},
+		}
+
+		result, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), replica, cluster)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(result).To(Equal(mysqlReplicaConvergenceResult{
+			Action:  mysqlReplicaConvergenceWriteSafety,
+			Mutated: true,
+		}))
+		g.Expect(result.Converged).To(BeFalse())
+		g.Expect(commands).To(Equal([]string{
+			mysqlWriteSafetyObservationCommand(),
+			mysqlSetSuperReadOnlyCommand(),
+		}))
+		g.Expect(commands).NotTo(ContainElements(
+			mysqlInitializeReplicaCommand(cluster.Spec.MasterService),
+			mysqlConfigureReplicaCommand(cluster.Spec.MasterService),
+			mysqlShowSlaveStatusCommand(),
+		))
+	})
+
+	t.Run("later reconcile verifies the fence before healthy channel convergence", func(t *testing.T) {
+		g := NewWithT(t)
+		cluster, statefulSet, replica := newMysqlReplicaConvergenceFixture(t)
+		commands := make([]string, 0, 4)
+		writeObservations := 0
+		reconciler := &MysqlClusterReconciler{
+			Client: newStatefulSetReconcileMemoryClient(statefulSet, replica),
+			execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
+				commands = append(commands, command)
+				switch command {
+				case mysqlWriteSafetyObservationCommand():
+					writeObservations++
+					if writeObservations == 1 {
+						return "0\t0\tON\tON\n", nil
+					}
+					return "1\t1\tON\tON\n", nil
+				case mysqlShowSlaveStatusCommand():
+					return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
+				default:
+					return "", nil
+				}
+			},
+		}
+
+		first, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), replica, cluster)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(first).To(Equal(mysqlReplicaConvergenceResult{Action: mysqlReplicaConvergenceWriteSafety, Mutated: true}))
+		g.Expect(commands).To(Equal([]string{mysqlWriteSafetyObservationCommand(), mysqlSetSuperReadOnlyCommand()}))
+
+		second, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), replica, cluster)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(second).To(Equal(mysqlReplicaConvergenceResult{Action: mysqlReplicaConvergenceNoop, Converged: true}))
+		g.Expect(commands).To(Equal([]string{
+			mysqlWriteSafetyObservationCommand(),
+			mysqlSetSuperReadOnlyCommand(),
+			mysqlWriteSafetyObservationCommand(),
+			mysqlShowSlaveStatusCommand(),
+		}))
+	})
+
+	t.Run("writable replica with absent channel stops at one mutation barrier", func(t *testing.T) {
+		g := NewWithT(t)
+		cluster, statefulSet, replica := newMysqlReplicaConvergenceFixture(t)
+		commands := make([]string, 0, 2)
+		reconciler := &MysqlClusterReconciler{
+			Client: newStatefulSetReconcileMemoryClient(statefulSet, replica),
+			execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
+				commands = append(commands, command)
+				if command == mysqlWriteSafetyObservationCommand() {
+					return "0\t0\tON\tON\n", nil
+				}
+				return "", nil
+			},
+		}
+
+		result, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), replica, cluster)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(result.Mutated).To(BeTrue())
+		g.Expect(result.Converged).To(BeFalse())
+		g.Expect(commands).To(Equal([]string{mysqlWriteSafetyObservationCommand(), mysqlSetSuperReadOnlyCommand()}))
+		g.Expect(commands).NotTo(ContainElement(mysqlInitializeReplicaCommand(cluster.Spec.MasterService)))
+	})
+
+	t.Run("malformed write-safety observation fails closed", func(t *testing.T) {
+		g := NewWithT(t)
+		cluster, statefulSet, replica := newMysqlReplicaConvergenceFixture(t)
+		commands := make([]string, 0, 1)
+		reconciler := &MysqlClusterReconciler{
+			Client: newStatefulSetReconcileMemoryClient(statefulSet, replica),
+			execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
+				commands = append(commands, command)
+				return "malformed", nil
+			},
+		}
+
+		result, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), replica, cluster)
+		g.Expect(err).To(MatchError(ContainSubstring("malformed MySQL write-safety observation")))
+		g.Expect(result).To(Equal(mysqlReplicaConvergenceResult{}))
+		g.Expect(commands).To(Equal([]string{mysqlWriteSafetyObservationCommand()}))
+	})
+
+	t.Run("failed write-safety observation fails closed", func(t *testing.T) {
+		g := NewWithT(t)
+		cluster, statefulSet, replica := newMysqlReplicaConvergenceFixture(t)
+		observationErr := errors.New("write-safety observation failed")
+		commands := make([]string, 0, 1)
+		reconciler := &MysqlClusterReconciler{
+			Client: newStatefulSetReconcileMemoryClient(statefulSet, replica),
+			execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
+				commands = append(commands, command)
+				return "", observationErr
+			},
+		}
+
+		result, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), replica, cluster)
+		g.Expect(errors.Is(err, observationErr)).To(BeTrue())
+		g.Expect(result).To(Equal(mysqlReplicaConvergenceResult{}))
+		g.Expect(commands).To(Equal([]string{mysqlWriteSafetyObservationCommand()}))
+	})
+
+	t.Run("GTID capability not ready fails closed before replication observation", func(t *testing.T) {
+		g := NewWithT(t)
+		cluster, statefulSet, replica := newMysqlReplicaConvergenceFixture(t)
+		commands := make([]string, 0, 1)
+		reconciler := &MysqlClusterReconciler{
+			Client: newStatefulSetReconcileMemoryClient(statefulSet, replica),
+			execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
+				commands = append(commands, command)
+				return "1\t1\tOFF\tON\n", nil
+			},
+		}
+
+		result, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), replica, cluster)
+		g.Expect(err).To(MatchError(ContainSubstring("not GTID-ready")))
+		g.Expect(result).To(Equal(mysqlReplicaConvergenceResult{}))
+		g.Expect(commands).To(Equal([]string{mysqlWriteSafetyObservationCommand()}))
+	})
+
+	t.Run("exactly read-only healthy replica avoids redundant fence mutation", func(t *testing.T) {
+		g := NewWithT(t)
+		cluster, statefulSet, replica := newMysqlReplicaConvergenceFixture(t)
+		commands := make([]string, 0, 2)
+		reconciler := &MysqlClusterReconciler{
+			Client: newStatefulSetReconcileMemoryClient(statefulSet, replica),
+			execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
+				commands = append(commands, command)
+				if command == mysqlWriteSafetyObservationCommand() {
+					return "1\t1\tON\tON\n", nil
+				}
+				return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
+			},
+		}
+
+		result, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), replica, cluster)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(result).To(Equal(mysqlReplicaConvergenceResult{Action: mysqlReplicaConvergenceNoop, Converged: true}))
+		g.Expect(commands).To(Equal([]string{mysqlWriteSafetyObservationCommand(), mysqlShowSlaveStatusCommand()}))
+		g.Expect(commands).NotTo(ContainElement(mysqlSetSuperReadOnlyCommand()))
+	})
+}
+
 func TestMysqlReplicationConvergenceSafety(t *testing.T) {
 	t.Run("malformed observation returns error without corrective mutation", func(t *testing.T) {
 		g := NewWithT(t)
@@ -179,13 +383,16 @@ func TestMysqlReplicationConvergenceSafety(t *testing.T) {
 			Client: newStatefulSetReconcileMemoryClient(statefulSet, replica),
 			execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
 				commands = append(commands, command)
+				if command == mysqlWriteSafetyObservationCommand() {
+					return "1\t1\tON\tON\n", nil
+				}
 				return "*************************** 1. row ***************************", nil
 			},
 		}
 
 		_, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), replica, cluster)
 		g.Expect(err).To(MatchError(ContainSubstring("missing required fields")))
-		g.Expect(commands).To(Equal([]string{mysqlShowSlaveStatusCommand()}))
+		g.Expect(commands).To(Equal([]string{mysqlWriteSafetyObservationCommand(), mysqlShowSlaveStatusCommand()}))
 	})
 
 	t.Run("spoofed Pod is rejected before SQL", func(t *testing.T) {
@@ -226,11 +433,14 @@ func TestMysqlReplicationConvergenceSafety(t *testing.T) {
 		g := NewWithT(t)
 		cluster, statefulSet, replica := newMysqlReplicaConvergenceFixture(t)
 		mutationErr := errors.New("mutation failed")
-		commands := make([]string, 0, 2)
+		commands := make([]string, 0, 3)
 		reconciler := &MysqlClusterReconciler{
 			Client: newStatefulSetReconcileMemoryClient(statefulSet, replica),
 			execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
 				commands = append(commands, command)
+				if command == mysqlWriteSafetyObservationCommand() {
+					return "1\t1\tON\tON\n", nil
+				}
 				if command == mysqlShowSlaveStatusCommand() {
 					return "", nil
 				}
@@ -241,6 +451,7 @@ func TestMysqlReplicationConvergenceSafety(t *testing.T) {
 		_, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), replica, cluster)
 		g.Expect(errors.Is(err, mutationErr)).To(BeTrue())
 		g.Expect(commands).To(Equal([]string{
+			mysqlWriteSafetyObservationCommand(),
 			mysqlShowSlaveStatusCommand(),
 			mysqlInitializeReplicaCommand(cluster.Spec.MasterService),
 		}))
@@ -249,20 +460,25 @@ func TestMysqlReplicationConvergenceSafety(t *testing.T) {
 	t.Run("Pod UID replacement between observation and mutation fails closed", func(t *testing.T) {
 		g := NewWithT(t)
 		cluster, statefulSet, observedReplica := newMysqlReplicaConvergenceFixture(t)
-		currentReplica := observedReplica.DeepCopy()
-		currentReplica.UID = types.UID("replica-convergence-pod-b")
+		replacement := observedReplica.DeepCopy()
+		replacement.UID = types.UID("replica-convergence-pod-b")
 		commands := make([]string, 0, 1)
+		memoryClient := newStatefulSetReconcileMemoryClient(statefulSet, observedReplica)
 		reconciler := &MysqlClusterReconciler{
-			Client: newStatefulSetReconcileMemoryClient(statefulSet, currentReplica),
+			Client: &mysqlReplicaConvergencePodReplacementClient{
+				statefulSetReconcileMemoryClient: memoryClient,
+				replacement:                      replacement,
+			},
 			execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
 				commands = append(commands, command)
-				return "", nil
+				return "0\t0\tON\tON\n", nil
 			},
 		}
 
 		_, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), observedReplica, cluster)
 		g.Expect(err).To(MatchError(ContainSubstring("observed UID")))
-		g.Expect(commands).To(Equal([]string{mysqlShowSlaveStatusCommand()}))
+		g.Expect(commands).To(Equal([]string{mysqlWriteSafetyObservationCommand()}))
+		g.Expect(commands).NotTo(ContainElement(mysqlSetSuperReadOnlyCommand()))
 	})
 
 	t.Run("ownership change between observation and mutation fails closed", func(t *testing.T) {
@@ -281,7 +497,7 @@ func TestMysqlReplicationConvergenceSafety(t *testing.T) {
 
 		_, err := reconciler.reconcileMysqlReplicaChannel(context.Background(), observedReplica, cluster)
 		g.Expect(err).To(MatchError(ContainSubstring("controller UID")))
-		g.Expect(commands).To(Equal([]string{mysqlShowSlaveStatusCommand()}))
+		g.Expect(commands).To(BeEmpty())
 	})
 
 	t.Run("oversized MasterService is rejected before any SQL", func(t *testing.T) {

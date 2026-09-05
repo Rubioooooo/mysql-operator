@@ -22,6 +22,9 @@ func TestPhase3CReplicationRuntimeActions(t *testing.T) {
 		reconciler.execCommandOnPodFn = func(commandPod *corev1.Pod, command string) (string, error) {
 			commands = append(commands, command)
 			g.Expect(commandPod.Name).To(Equal(replica.Name))
+			if command == mysqlWriteSafetyObservationCommand() {
+				return "1\t1\tON\tON\n", nil
+			}
 			return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
 		}
 
@@ -29,7 +32,7 @@ func TestPhase3CReplicationRuntimeActions(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(result.RequeueAfter).To(BeZero())
 		g.Expect(converged).To(BeTrue())
-		g.Expect(commands).To(Equal([]string{mysqlShowSlaveStatusCommand()}))
+		g.Expect(commands).To(Equal([]string{mysqlWriteSafetyObservationCommand(), mysqlShowSlaveStatusCommand()}))
 		g.Expect(commands).NotTo(ContainElement(mysqlPreparePrimaryCommand()))
 	})
 
@@ -83,6 +86,9 @@ func TestPhase3CReplicationRuntimeActions(t *testing.T) {
 				execCommandOnPodFn: func(commandPod *corev1.Pod, command string) (string, error) {
 					commands = append(commands, command)
 					g.Expect(commandPod.Name).To(Equal(replica.Name))
+					if command == mysqlWriteSafetyObservationCommand() {
+						return "1\t1\tON\tON\n", nil
+					}
 					if command == mysqlShowSlaveStatusCommand() {
 						return testCase.statusOutput(cluster.Spec.MasterService), nil
 					}
@@ -94,7 +100,7 @@ func TestPhase3CReplicationRuntimeActions(t *testing.T) {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(result.RequeueAfter).To(Equal(mysqlReplicationRuntimeRequeueAfter))
 			g.Expect(converged).To(BeFalse())
-			expectedCommands := []string{mysqlShowSlaveStatusCommand()}
+			expectedCommands := []string{mysqlWriteSafetyObservationCommand(), mysqlShowSlaveStatusCommand()}
 			if testCase.expectedCorrection != nil {
 				expectedCommands = append(expectedCommands, testCase.expectedCorrection(cluster.Spec.MasterService))
 			}
@@ -116,6 +122,8 @@ func TestPhase3CReplicationRuntimeActions(t *testing.T) {
 		reconciler.execCommandOnPodFn = func(commandPod *corev1.Pod, command string) (string, error) {
 			commands = append(commands, commandPod.Name+":"+command)
 			switch {
+			case command == mysqlWriteSafetyObservationCommand() && (commandPod.Name == replica2.Name || commandPod.Name == replica3.Name):
+				return "1\t1\tON\tON\n", nil
 			case command == mysqlShowSlaveStatusCommand() && commandPod.Name == replica2.Name:
 				return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Connecting", "Yes", "", ""), nil
 			case command == mysqlShowSlaveStatusCommand() && commandPod.Name == replica3.Name:
@@ -132,7 +140,9 @@ func TestPhase3CReplicationRuntimeActions(t *testing.T) {
 		g.Expect(result.RequeueAfter).To(Equal(mysqlReplicationRuntimeRequeueAfter))
 		g.Expect(converged).To(BeFalse())
 		g.Expect(commands).To(Equal([]string{
+			replica2.Name + ":" + mysqlWriteSafetyObservationCommand(),
 			replica2.Name + ":" + mysqlShowSlaveStatusCommand(),
+			replica3.Name + ":" + mysqlWriteSafetyObservationCommand(),
 			replica3.Name + ":" + mysqlShowSlaveStatusCommand(),
 			replica3.Name + ":" + mysqlConfigureReplicaCommand(cluster.Spec.MasterService),
 		}))
@@ -153,6 +163,9 @@ func TestPhase3CReplicationRuntimeRolePublication(t *testing.T) {
 		Client: memoryClient,
 		execCommandOnPodFn: func(_ *corev1.Pod, command string) (string, error) {
 			commands = append(commands, command)
+			if command == mysqlWriteSafetyObservationCommand() {
+				return "1\t1\tON\tON\n", nil
+			}
 			if command == mysqlShowSlaveStatusCommand() {
 				if healthy {
 					return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
@@ -181,8 +194,10 @@ func TestPhase3CReplicationRuntimeRolePublication(t *testing.T) {
 	expectMysqlPodRoleForTest(t, ctx, reconciler, rolelessReplica, "slave")
 	g.Expect(memoryClient.updateCount).To(Equal(1))
 	g.Expect(commands).To(Equal([]string{
+		mysqlWriteSafetyObservationCommand(),
 		mysqlShowSlaveStatusCommand(),
 		mysqlInitializeReplicaCommand(cluster.Spec.MasterService),
+		mysqlWriteSafetyObservationCommand(),
 		mysqlShowSlaveStatusCommand(),
 	}))
 }
@@ -264,14 +279,17 @@ func TestPhase3CReplicationRuntimeTopologySafety(t *testing.T) {
 		replica := phase1HPod(t, cluster, statefulSet, 2, "slave", true)
 		commands := make([]string, 0, 1)
 		reconciler := phase1HReconciler(t, statefulSet, primary, replica)
-		reconciler.execCommandOnPodFn = func(*corev1.Pod, string) (string, error) {
-			commands = append(commands, mysqlShowSlaveStatusCommand())
+		reconciler.execCommandOnPodFn = func(_ *corev1.Pod, command string) (string, error) {
+			commands = append(commands, command)
+			if command == mysqlWriteSafetyObservationCommand() {
+				return "1\t1\tON\tON\n", nil
+			}
 			return "Slave_IO_Running: Yes\nSlave_SQL_Running: Yes\n", nil
 		}
 
 		_, _, err := reconciler.reconcileMysqlHealthyPrimaryRuntime(context.Background(), cluster)
 		g.Expect(err).To(MatchError(ContainSubstring("missing required fields")))
-		g.Expect(commands).To(HaveLen(1))
+		g.Expect(commands).To(Equal([]string{mysqlWriteSafetyObservationCommand(), mysqlShowSlaveStatusCommand()}))
 	})
 
 	t.Run("Endpoint target does not select replica SQL targets", func(t *testing.T) {
@@ -285,6 +303,9 @@ func TestPhase3CReplicationRuntimeTopologySafety(t *testing.T) {
 		reconciler := phase1HReconciler(t, cluster, statefulSet, publishedPrimary, replica, misleadingEndpoint)
 		reconciler.execCommandOnPodFn = func(commandPod *corev1.Pod, command string) (string, error) {
 			commandsOn = append(commandsOn, commandPod.Name)
+			if command == mysqlWriteSafetyObservationCommand() {
+				return "1\t1\tON\tON\n", nil
+			}
 			g.Expect(command).To(Equal(mysqlShowSlaveStatusCommand()))
 			return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
 		}
@@ -293,7 +314,7 @@ func TestPhase3CReplicationRuntimeTopologySafety(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(result.RequeueAfter).To(BeZero())
 		g.Expect(converged).To(BeTrue())
-		g.Expect(commandsOn).To(Equal([]string{replica.Name}))
+		g.Expect(commandsOn).To(Equal([]string{replica.Name, replica.Name}))
 	})
 }
 
@@ -341,6 +362,9 @@ func TestPhase3CReplicationRuntimeTransitionCompletion(t *testing.T) {
 			)
 			reconciler.execCommandOnPodFn = func(commandPod *corev1.Pod, command string) (string, error) {
 				commands = append(commands, commandPod.Name+":"+command)
+				if command == mysqlWriteSafetyObservationCommand() {
+					return "1\t1\tON\tON\n", nil
+				}
 				if command == mysqlShowSlaveStatusCommand() {
 					if commandPod.Name == newReplica.Name {
 						return testCase.newReplicaStatus(cluster.Spec.MasterService), nil

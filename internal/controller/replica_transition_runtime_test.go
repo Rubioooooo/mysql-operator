@@ -73,6 +73,8 @@ func phase2B2HealthyDomainExec(
 	reconciler.execCommandOnPodFn = func(_ *corev1.Pod, command string) (string, error) {
 		calls++
 		switch command {
+		case mysqlWriteSafetyObservationCommand():
+			return "1\t1\tON\tON\n", nil
 		case mysqlShowSlaveStatusCommand():
 			return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
 		case mysqlPreparePrimaryCommand(), mysqlConfigureReplicaCommand(""):
@@ -339,6 +341,9 @@ func TestPhase2B2ScaleUpDeltaGate(t *testing.T) {
 		execCalls := 0
 		reconciler.execCommandOnPodFn = func(pod *corev1.Pod, command string) (string, error) {
 			execCalls++
+			if command == mysqlWriteSafetyObservationCommand() {
+				return "1\t1\tON\tON\n", nil
+			}
 			if pod.Name == replica2.Name && command == mysqlShowSlaveStatusCommand() {
 				return "", errors.New("established replica MySQL is unavailable")
 			}

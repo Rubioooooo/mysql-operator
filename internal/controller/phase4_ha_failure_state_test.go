@@ -41,8 +41,11 @@ func TestPhase4HAFailureClassification(t *testing.T) {
 		misleadingEndpoint := phase1HEndpoints(cluster, replica)
 		reconciler := phase1HReconciler(t, cluster, statefulSet, primary, replica, misleadingEndpoint)
 		execCalls := 0
-		reconciler.execCommandOnPodFn = func(*corev1.Pod, string) (string, error) {
+		reconciler.execCommandOnPodFn = func(_ *corev1.Pod, command string) (string, error) {
 			execCalls++
+			if command == mysqlWriteSafetyObservationCommand() {
+				return "1\t1\tON\tON\n", nil
+			}
 			return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
 		}
 
@@ -50,7 +53,7 @@ func TestPhase4HAFailureClassification(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(converged).To(BeTrue())
 		g.Expect(result.RequeueAfter).To(BeZero())
-		g.Expect(execCalls).To(Equal(1))
+		g.Expect(execCalls).To(Equal(2))
 		g.Expect(phase4StoredCluster(t, reconciler, cluster).Status.HA).To(Equal(phase4HAStatus(databasev1.MysqlClusterHAStateHealthy, primary)))
 	})
 
@@ -94,6 +97,9 @@ func TestPhase4HAFailureClassification(t *testing.T) {
 			if command == mysqlPreparePrimaryCommand() {
 				promotionCalls++
 			}
+			if command == mysqlWriteSafetyObservationCommand() {
+				return "1\t1\tON\tON\n", nil
+			}
 			if command == mysqlShowSlaveStatusCommand() {
 				return mysqlSlaveStatusOutputForTest(cluster.Spec.MasterService, "replica", "1", "Yes", "Yes", "", ""), nil
 			}
@@ -129,7 +135,7 @@ func TestPhase4HAFailureClassification(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 		recovered := phase4StoredCluster(t, reconciler, cluster)
 		g.Expect(recovered.Status.HA).To(Equal(phase4HAStatus(databasev1.MysqlClusterHAStateHealthy, recoveredPrimary)))
-		g.Expect(execCalls).To(Equal(1), "recovery may resume Phase 3 semantic observation")
+		g.Expect(execCalls).To(Equal(2), "recovery may resume write-safety and Phase 3 semantic observation")
 		g.Expect(promotionCalls).To(Equal(0))
 	})
 
@@ -307,6 +313,9 @@ func TestPhase4HAVerifyingSemanticWait(t *testing.T) {
 	commands := make([]string, 0, 2)
 	reconciler.execCommandOnPodFn = func(pod *corev1.Pod, command string) (string, error) {
 		commands = append(commands, pod.Name+":"+command)
+		if command == mysqlWriteSafetyObservationCommand() {
+			return "1\t1\tON\tON\n", nil
+		}
 		g.Expect(command).To(Equal(mysqlShowSlaveStatusCommand()))
 		ioRunning := "Connecting"
 		if semanticConverged {
@@ -319,7 +328,7 @@ func TestPhase4HAVerifyingSemanticWait(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(converged).To(BeFalse())
 	g.Expect(result.RequeueAfter).To(Equal(mysqlReplicationRuntimeRequeueAfter))
-	g.Expect(commands).To(HaveLen(1), "Phase 3 semantic observation must run while Verifying")
+	g.Expect(commands).To(HaveLen(2), "write safety and Phase 3 semantic observation must run while Verifying")
 	waiting := phase4StoredCluster(t, reconciler, cluster)
 	g.Expect(waiting.Status.HA).To(Equal(phase4HAStatus(databasev1.MysqlClusterHAStateVerifying, primary)))
 
@@ -328,7 +337,7 @@ func TestPhase4HAVerifyingSemanticWait(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(converged).To(BeFalse(), "Healthy publication returns for a later observation cycle")
 	g.Expect(result.RequeueAfter).To(Equal(mysqlHAFailureRequeueAfter))
-	g.Expect(commands).To(HaveLen(2))
+	g.Expect(commands).To(HaveLen(4))
 	g.Expect(phase4StoredCluster(t, reconciler, cluster).Status.HA).To(Equal(phase4HAStatus(databasev1.MysqlClusterHAStateHealthy, primary)))
 	for _, command := range commands {
 		g.Expect(command).NotTo(ContainSubstring(mysqlPreparePrimaryCommand()))
@@ -359,6 +368,9 @@ func TestPhase4HAFailoverInProgressIdentityAdoption(t *testing.T) {
 	commands := make([]string, 0, 4)
 	reconciler.execCommandOnPodFn = func(pod *corev1.Pod, command string) (string, error) {
 		commands = append(commands, pod.Name+":"+command)
+		if command == mysqlWriteSafetyObservationCommand() {
+			return "1\t1\tON\tON\n", nil
+		}
 		g.Expect(command).To(Equal(mysqlShowSlaveStatusCommand()))
 		ioRunning := "Yes"
 		if pod.Name == replica.Name && !semanticConverged {
@@ -380,7 +392,7 @@ func TestPhase4HAFailoverInProgressIdentityAdoption(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(converged).To(BeFalse())
 	g.Expect(result.RequeueAfter).To(Equal(mysqlReplicationRuntimeRequeueAfter))
-	g.Expect(commands).To(HaveLen(2), "the reconcile after adoption must use Phase 3 semantic observation")
+	g.Expect(commands).To(HaveLen(4), "the reconcile after adoption must verify write safety before Phase 3 semantic observation")
 	waiting := phase4StoredCluster(t, reconciler, cluster)
 	g.Expect(waiting.Status.HA).To(Equal(phase4HAStatus(databasev1.MysqlClusterHAStateVerifying, newPrimary)))
 
@@ -389,6 +401,6 @@ func TestPhase4HAFailoverInProgressIdentityAdoption(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(converged).To(BeFalse())
 	g.Expect(result.RequeueAfter).To(Equal(mysqlHAFailureRequeueAfter))
-	g.Expect(commands).To(HaveLen(4))
+	g.Expect(commands).To(HaveLen(8))
 	g.Expect(phase4StoredCluster(t, reconciler, cluster).Status.HA).To(Equal(phase4HAStatus(databasev1.MysqlClusterHAStateHealthy, newPrimary)))
 }

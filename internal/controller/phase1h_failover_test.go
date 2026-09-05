@@ -198,6 +198,9 @@ func TestPhase1HRuntimeReadinessGates(t *testing.T) {
 			if command == mysqlPreparePrimaryCommand() {
 				promotionCommands++
 			}
+			if command == mysqlWriteSafetyObservationCommand() {
+				return "1\t1\tON\tON\n", nil
+			}
 			if command == mysqlShowSlaveStatusCommand() {
 				if pod.Name == replica2.Name {
 					return "", errors.New("local MySQL socket is not ready")
