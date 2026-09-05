@@ -46,6 +46,32 @@ func mysqlGTIDBootstrapOutput(serverUUID, purged, executed string, ownOnly bool)
 	)
 }
 
+func TestMysqlGTIDBootstrapObservationUsesMaximumValidGNO(t *testing.T) {
+	g := NewWithT(t)
+	command := mysqlGTIDBootstrapObservationCommand()
+	g.Expect(mysqlGTIDMaxGNO).To(Equal(int64(9223372036854775806)))
+	g.Expect(command).To(ContainSubstring("CONCAT(@@GLOBAL.server_uuid, ':1-9223372036854775806')"))
+	g.Expect(command).NotTo(ContainSubstring("9223372036854775807"))
+
+	owned, err := parseMysqlGTIDBootstrapObservation(mysqlGTIDBootstrapOutput(
+		mysqlGTIDTestUUID1,
+		"",
+		mysqlGTIDTestUUID1+":1-5",
+		true,
+	))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(owned.ExecutedOwnOnly).To(BeTrue())
+
+	foreign, err := parseMysqlGTIDBootstrapObservation(mysqlGTIDBootstrapOutput(
+		mysqlGTIDTestUUID1,
+		"",
+		mysqlGTIDTestUUID2+":1",
+		false,
+	))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(foreign.ExecutedOwnOnly).To(BeFalse())
+}
+
 func TestMysqlGTIDBootstrapStatusAndNormalization(t *testing.T) {
 	g := NewWithT(t)
 	cluster := phase1HCluster("gtid-normalization", true)

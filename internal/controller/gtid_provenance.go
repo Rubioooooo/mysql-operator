@@ -24,8 +24,13 @@ type mysqlGTIDBootstrapProof struct {
 	Entry  databasev1.MysqlClusterGTIDBootstrapStatus
 }
 
+const mysqlGTIDMaxGNO int64 = 9223372036854775806
+
 func mysqlGTIDBootstrapObservationCommand() string {
-	return mysqlRootClientCommand + ` -Nse "SELECT @@GLOBAL.server_uuid, REPLACE(TO_BASE64(@@GLOBAL.gtid_purged), CHAR(10), ''), REPLACE(TO_BASE64(@@GLOBAL.gtid_executed), CHAR(10), ''), GTID_SUBSET(@@GLOBAL.gtid_executed, CONCAT(@@GLOBAL.server_uuid, ':1-9223372036854775807'));"`
+	return mysqlRootClientCommand + fmt.Sprintf(
+		` -Nse "SELECT @@GLOBAL.server_uuid, REPLACE(TO_BASE64(@@GLOBAL.gtid_purged), CHAR(10), ''), REPLACE(TO_BASE64(@@GLOBAL.gtid_executed), CHAR(10), ''), GTID_SUBSET(@@GLOBAL.gtid_executed, CONCAT(@@GLOBAL.server_uuid, ':1-%d'));"`,
+		mysqlGTIDMaxGNO,
+	)
 }
 
 func parseMysqlGTIDBootstrapObservation(output string) (mysqlGTIDBootstrapObservation, error) {
